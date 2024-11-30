@@ -1,4 +1,4 @@
-import sdk from "@scrypted/sdk";
+import sdk, { ScryptedInterface } from "@scrypted/sdk";
 import { throttle } from "lodash";
 import semver from 'semver';
 
@@ -6,6 +6,8 @@ export enum TaskType {
     UpdatePlugins = 'UpdatePlugins',
     RestartPlugins = 'RestartPlugins',
     Diagnostics = 'Diagnostics',
+    RestartCameras = 'RestartCameras',
+    ReportPluginsStatus = 'ReportPluginsStatus',
 }
 
 export interface PluginUpdateCheck {
@@ -97,6 +99,56 @@ async function checkNpmUpdate(npmPackage: string, npmPackageVersion: string, log
 export const restartPlugin = async (pluginName: string) => {
     const plugins = await sdk.systemManager.getComponent('plugins');
     await plugins.reload(pluginName);
+}
+
+interface PluginInfo {
+    clientsCount: number;
+    pid: number;
+    rpcObjects: number;
+    pendingResults: number;
+}
+
+interface PluginStats {
+    rpcObjects: { name: string, count: number }[],
+    pendingResults: { name: string, count: number }[],
+    connections: { name: string, count: number }[],
+    cluster?: {
+        workers: { name: string, count: number }[],
+        devices: { name: string, count: number }[],
+    }
+}
+
+export const getPluginStats = async () => {
+    const plugins = await sdk.systemManager.getComponent(
+        "plugins"
+    );
+    const stats: PluginStats = {
+        rpcObjects: [],
+        connections: [],
+        pendingResults: [],
+    }
+
+    const pluginNames = Object.keys(sdk.systemManager.getSystemState())
+        .filter(id => {
+            const d = sdk.systemManager.getDeviceById(id);
+            return d.interfaces.includes(ScryptedInterface.ScryptedPlugin);
+        }).map(pluginId => {
+            const plugin = sdk.systemManager.getDeviceById(pluginId);
+            return plugin.info.manufacturer;
+        });
+
+    for (const pluginName of pluginNames) {
+        const pluginStats: PluginInfo = await plugins.getPluginInfo(pluginName);
+        stats.rpcObjects.push({ name: pluginName, count: pluginStats.rpcObjects });
+        stats.connections.push({ name: pluginName, count: pluginStats.clientsCount });
+        stats.pendingResults.push({ name: pluginName, count: pluginStats.pendingResults });
+    }
+
+    stats.rpcObjects = stats.rpcObjects.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, 5);
+    stats.connections = stats.connections.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, 5);
+    stats.pendingResults = stats.pendingResults.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, 5);
+
+    return stats;
 }
 
 export const updatePlugin = async (

@@ -2,7 +2,7 @@ import sdk, { Reboot, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface,
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
 import cron, { ScheduledTask } from 'node-cron';
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
-import { getTaskChecksum, getTaskKeys, restartPlugin, runValidate, Task, TaskType, updatePlugin } from "./utils";
+import { getPluginStats, getTaskChecksum, getTaskKeys, restartPlugin, runValidate, Task, TaskType, updatePlugin } from "./utils";
 import DiagnosticsPlugin from './diagnostics/main.nodejs.js';
 
 export default class RemoteBackup extends BasePlugin {
@@ -13,7 +13,6 @@ export default class RemoteBackup extends BasePlugin {
     storageSettings = new StorageSettings(this, {
         ...getBaseSettings({
             onPluginSwitch: (_, enabled) => this.startStop(enabled),
-            hideCronRestart: true,
             hideMqtt: true,
         }),
         tasks: {
@@ -168,6 +167,17 @@ export default class RemoteBackup extends BasePlugin {
                                 message += `[${manufacturer}]: Already on latest version ${version}\n`;
                             }
                         }
+                    } else if (type === TaskType.ReportPluginsStatus) {
+                        const stats = await getPluginStats();
+                        logger.log(`Current stats: ${JSON.stringify(stats)}`);
+
+                        const divider = '-------------\n';
+                        message += `[RPC Objects]\n${divider}`;
+                        stats.rpcObjects.forEach(item => message += `${item.name}: ${item.count}\n`);
+                        message += `${divider}[Pending Results]\n${divider}`;
+                        stats.pendingResults.forEach(item => message += `${item.name}: ${item.count}\n`);
+                        message += `${divider}[Connections]\n${divider}`;
+                        stats.connections.forEach(item => message += `${item.name}: ${item.count}\n`);
                     }
 
                     const { notifier } = this.storageSettings.values;
@@ -235,7 +245,7 @@ export default class RemoteBackup extends BasePlugin {
                     key: taskTypeKey,
                     title: 'Task type',
                     type: 'string',
-                    choices: [TaskType.UpdatePlugins, TaskType.RestartPlugins, TaskType.Diagnostics],
+                    choices: Object.keys(TaskType),
                     value: taskType,
                     group: task,
                     immediate: true
