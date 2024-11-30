@@ -1,8 +1,8 @@
-import sdk, { Notifier, Reboot, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting, SettingValue } from "@scrypted/sdk";
+import sdk, { Reboot, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting, SettingValue } from "@scrypted/sdk";
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
 import cron, { ScheduledTask } from 'node-cron';
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
-import { getTaskChecksum, getTaskKeys, restartPlugin, runValidate, Task, TaskType, updatePlugin, ValidationResult } from "./utils";
+import { getTaskChecksum, getTaskKeys, restartPlugin, runValidate, Task, TaskType, updatePlugin } from "./utils";
 import DiagnosticsPlugin from './diagnostics/main.nodejs.js';
 
 export default class RemoteBackup extends BasePlugin {
@@ -11,13 +11,22 @@ export default class RemoteBackup extends BasePlugin {
     private diagnosticsPlugin;
     private tasksCheckListener: NodeJS.Timeout;
     storageSettings = new StorageSettings(this, {
-        ...getBaseSettings({ onPluginSwitch: (_, enabled) => this.startStop(enabled) }),
+        ...getBaseSettings({
+            onPluginSwitch: (_, enabled) => this.startStop(enabled),
+            hideCronRestart: true,
+            hideMqtt: true,
+        }),
         tasks: {
             title: 'Tasks',
             multiple: true,
             combobox: true,
             type: 'string',
             choices: [],
+        },
+        notifier: {
+            title: 'Notifier',
+            type: 'device',
+            deviceFilter: `(type === '${ScryptedDeviceType.Notifier}')`,
         },
     });
 
@@ -28,9 +37,6 @@ export default class RemoteBackup extends BasePlugin {
         this.diagnosticsPlugin = new DiagnosticsPlugin();
 
         this.start(true).then().catch(console.log);
-        // runValidate(this.diagnosticsPlugin, this.console).then(() => {
-        //     runValidate(this.diagnosticsPlugin, this.console, '357').then().catch(console.log);
-        // }).catch(console.log);
     }
 
 
@@ -164,10 +170,10 @@ export default class RemoteBackup extends BasePlugin {
                         }
                     }
 
-                    const { devNotifier } = this.storageSettings.values;
-                    if (devNotifier) {
-                        this.console.log(`Sending notification to ${devNotifier.name}: ${JSON.stringify({ title, message })}`);
-                        await devNotifier.sendNotification(title, {
+                    const { notifier } = this.storageSettings.values;
+                    if (notifier) {
+                        this.console.log(`Sending notification to ${notifier.name}: ${JSON.stringify({ title, message })}`);
+                        await notifier.sendNotification(title, {
                             body: message,
                         });
                     }
