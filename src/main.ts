@@ -129,7 +129,7 @@ export default class RemoteBackup extends BasePlugin {
                             logger.log(`Starting ${type} for ${device.name}`);
                             const result = await runValidate(this.diagnosticsPlugin, this.console, deviceId);
                             logger.log(`Result for ${type}-${name}: ${JSON.stringify(result)}`);
-                            message += `[${device.name} Diagnostic]: ${result.text}`;
+                            message += `[${device.name}]: ${result.text}`;
 
                             if (rebootOnErrors && result.errorSteps.length > 0 && device.interfaces.includes(ScryptedInterface.Reboot)) {
                                 message += ` | Restarting |`;
@@ -144,7 +144,7 @@ export default class RemoteBackup extends BasePlugin {
                             logger.log(`Starting ${type} for System`);
                             const result = await runValidate(this.diagnosticsPlugin, this.console);
                             logger.log(`Result for ${type}-System: ${JSON.stringify(result)}`);
-                            message += `[System diagnostic]: ${result.text}}`
+                            message += `[System]: ${result.text}`
                         }
                     } else if (type === TaskType.RestartPlugins) {
                         for (const pluginId of plugins) {

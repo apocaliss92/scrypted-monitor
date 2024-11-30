@@ -200,7 +200,7 @@ export const runValidate = async (diagnosticsPlugin: any, console: Console, devi
 
     let text = '';
     if (!warnSteps.length && !errorSteps.length) {
-        text = 'ALl good';
+        text = 'All good';
     } else {
         if (warnSteps.length) {
             text = `Warnings: ${warnSteps.map(step => step.stepName)}`;

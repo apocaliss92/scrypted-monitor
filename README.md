@@ -10,5 +10,4 @@ Scrypted plugin that can run the following actions on a scheduled base:
 The result of the runs can be sent on a notifier
 
 TODO
-Fix an issue with wrongly reported motion
 Add test button
