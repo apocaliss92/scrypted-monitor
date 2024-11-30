@@ -1,4 +1,4 @@
-import sdk, { ScryptedInterface } from "@scrypted/sdk";
+import sdk, { ScryptedInterface, ScryptedNativeId } from "@scrypted/sdk";
 import { throttle } from "lodash";
 import semver from 'semver';
 
@@ -27,7 +27,9 @@ export interface Task {
     type: TaskType;
     cronScheduler: string;
     rebootOnErrors: boolean;
+    enabled: boolean;
     beta: boolean;
+    maxStats?: number;
     runSystemDiagnostic?: boolean;
     plugins?: string[];
     devices?: string[];
@@ -36,7 +38,7 @@ export interface Task {
 const throttles = new Map<string, () => Promise<any>>();
 const cache: Record<string, PluginUpdateCheck> = {};
 
-async function checkNpmUpdate(npmPackage: string, npmPackageVersion: string, logger: Console): Promise<PluginUpdateCheck> {
+async function checkNpmUpdate(npmPackage: string, npmPackageVersion: string, logger: Console): Promise<NpmVersion[]> {
     try {
         let f = throttles.get(npmPackage);
         if (!f) {
@@ -54,43 +56,20 @@ async function checkNpmUpdate(npmPackage: string, npmPackageVersion: string, log
         }
         const { time } = data;
         const versions = Object.values(data.versions ?? {}).sort((a: any, b: any) => semver.compare(a.version, b.version)).reverse();
-        let updateAvailable: any;
-        let updatePublished: any;
         let latest: any;
-        if (data["dist-tags"]) {
-            latest = data["dist-tags"].latest;
-            if (npmPackageVersion && semver.gt(latest, npmPackageVersion)) {
-                updateAvailable = latest;
-                try {
-                    updatePublished = new Date(data["time"][latest]);
-                } catch {
-                    updatePublished = null;
-                }
-            }
-        }
         for (const [k, v] of Object.entries(data['dist-tags'])) {
             const found: any = versions.find((version: any) => version.version === v);
             if (found) {
                 found.tag = k;
             }
         }
-        // make sure latest build is first instead of a beta.
-        if (latest) {
-            const index = versions.findIndex((v: any) => v.version === latest);
-            const [spliced] = versions.splice(index, 1);
-            versions.unshift(spliced);
-        }
-        return {
-            updateAvailable,
-            updatePublished,
-            versions: (versions as NpmVersion[]).map(version => {
-                return {
-                    ...version,
-                    tag: version.tag || '',
-                    time: new Date(time[version.version]).toLocaleDateString(),
-                };
-            }),
-        };
+        return (versions as NpmVersion[]).map(version => {
+            return {
+                ...version,
+                tag: version.tag || '',
+                time: new Date(time[version.version]).toLocaleDateString(),
+            };
+        });
     } catch (e) {
         logger.log('Error in checkNpm', e);
     }
@@ -118,7 +97,35 @@ interface PluginStats {
     }
 }
 
-export const getPluginStats = async () => {
+export interface ForkOptions {
+    name?: string;
+    runtime?: string;
+    filename?: string;
+    id?: string;
+    nativeId?: ScryptedNativeId;
+    clusterWorkerId?: string;
+    labels?: {
+        require?: string[];
+        any?: string[];
+        prefer?: string[];
+    };
+}
+
+export interface ClusterFork {
+    runtime?: ForkOptions['runtime'];
+    labels?: ForkOptions['labels'];
+    id?: ForkOptions['id'];
+    clusterWorkerId: ForkOptions['clusterWorkerId'];
+}
+
+export interface ClusterWorker {
+    name: string;
+    id: string;
+    labels: string[];
+    forks: ClusterFork[];
+}
+
+export const getPluginStats = async (maxStats = 5) => {
     const plugins = await sdk.systemManager.getComponent(
         "plugins"
     );
@@ -144,9 +151,46 @@ export const getPluginStats = async () => {
         stats.pendingResults.push({ name: pluginName, count: pluginStats.pendingResults });
     }
 
-    stats.rpcObjects = stats.rpcObjects.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, 5);
-    stats.connections = stats.connections.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, 5);
-    stats.pendingResults = stats.pendingResults.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, 5);
+    stats.rpcObjects = stats.rpcObjects.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, maxStats);
+    stats.connections = stats.connections.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, maxStats);
+    stats.pendingResults = stats.pendingResults.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, maxStats);
+
+    const clusterFork = await sdk.systemManager.getComponent('cluster-fork');
+    if (clusterFork) {
+        const clusterWorkers = await clusterFork.getClusterWorkers() as Record<string, ClusterWorker>;
+        const clustersInfo = Object.entries(clusterWorkers).map(([_, info]) => ({
+            name: info.name,
+            forks: info.forks
+        }));
+
+        const devicesData: Record<string, { name: string, count: number }> = {};
+
+        for (const worker of Object.values(clusterWorkers)) {
+            for (const fork of worker.forks) {
+                const id = fork.id;
+                let d = devicesData[id];
+                if (!d) {
+                    d = {
+                        name: sdk.systemManager.getDeviceById(id)?.name || 'Unknown Device',
+                        count: 0,
+                    };
+                    devicesData[id] = d;
+                }
+                d.count++;
+            }
+        }
+
+        stats.cluster = {
+            workers: clustersInfo.map(cluster => ({
+                name: cluster.name,
+                count: cluster.forks.length
+            })).slice(0, maxStats),
+            devices: Object.values(devicesData).map(device => ({
+                name: device.name,
+                count: device.count
+            })).slice(0, maxStats)
+        }
+    }
 
     return stats;
 }
@@ -157,23 +201,23 @@ export const updatePlugin = async (
     currentVersion: string,
     beta?: boolean
 ) => {
-    const status = await checkNpmUpdate(pluginName, currentVersion, logger);
+    const versions = await checkNpmUpdate(pluginName, currentVersion, logger);
 
-    if (!status) {
+    if (!versions) {
         logger.log(`No data found for plugin ${pluginName}`);
         return;
     }
 
-    let latestVersion = status.versions[0];
-    if (latestVersion.tag === 'beta' && !beta) {
-        latestVersion = status.versions.find(elem => elem.tag === '');
+    let versionToUse = versions[0];
+    if (versionToUse.tag === 'beta' && !beta) {
+        versionToUse = versions.find(version => version.tag === 'latest');
     }
 
-    let updated;
-    let newVersion;
-    if (latestVersion.version !== currentVersion) {
+    let updated: boolean;
+    let newVersion: string;
+    if (versionToUse.version !== currentVersion) {
         updated = true;
-        newVersion = latestVersion.version;
+        newVersion = versionToUse.version;
         logger.log(`Updating ${pluginName} to version ${newVersion}`);
         const plugins = await sdk.systemManager.getComponent('plugins');
         await plugins.installNpm(pluginName, newVersion);
@@ -195,6 +239,7 @@ export const getTaskKeys = (taskName: string) => {
     const taskEnabledKey = `task:${taskName}:enabled`;
     const taskSystemDiagnostic = `task:${taskName}:systemDiagnostic`;
     const taskBetaKey = `task:${taskName}:beta`;
+    const taskMaxStatsKey = `task:${taskName}:maxStats`;
 
     return {
         taskTypeKey,
@@ -205,6 +250,7 @@ export const getTaskKeys = (taskName: string) => {
         taskEnabledKey,
         taskSystemDiagnostic,
         taskBetaKey,
+        taskMaxStatsKey,
     }
 }
 
