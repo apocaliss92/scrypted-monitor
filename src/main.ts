@@ -273,7 +273,7 @@ export default class RemoteBackup extends BasePlugin {
 
     async getSettings() {
         const { tasks } = this.storageSettings.values;
-        const settings: Setting[] = await this.storageSettings.getSettings();
+        const settings: Setting[] = await super.getSettings();
 
         (tasks as string[]).forEach(task => {
             const {
@@ -436,9 +436,5 @@ export default class RemoteBackup extends BasePlugin {
         });
 
         return settings;
-    }
-
-    putSetting(key: string, value: SettingValue): Promise<void> {
-        return this.storageSettings.putSetting(key, value);
     }
 }
