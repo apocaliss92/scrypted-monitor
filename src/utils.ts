@@ -29,6 +29,7 @@ export interface Task {
     rebootOnErrors: boolean;
     enabled: boolean;
     beta: boolean;
+    skipNotify: boolean;
     maxStats?: number;
     runSystemDiagnostic?: boolean;
     plugins?: string[];
@@ -240,6 +241,7 @@ export const getTaskKeys = (taskName: string) => {
     const taskSystemDiagnostic = `task:${taskName}:systemDiagnostic`;
     const taskBetaKey = `task:${taskName}:beta`;
     const taskMaxStatsKey = `task:${taskName}:maxStats`;
+    const taskSkipNotify = `task:${taskName}:skipNotify`;
 
     return {
         taskTypeKey,
@@ -251,6 +253,7 @@ export const getTaskKeys = (taskName: string) => {
         taskSystemDiagnostic,
         taskBetaKey,
         taskMaxStatsKey,
+        taskSkipNotify,
     }
 }
 

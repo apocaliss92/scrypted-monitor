@@ -93,7 +93,6 @@ export default class RemoteBackup extends BasePlugin {
     }
 
     getTask(taskName: string): Task {
-
         const {
             taskCronKey,
             taskDevicesKey,
@@ -104,6 +103,7 @@ export default class RemoteBackup extends BasePlugin {
             taskSystemDiagnostic,
             taskBetaKey,
             taskMaxStatsKey,
+            taskSkipNotify,
         } = getTaskKeys(taskName);
 
         return {
@@ -111,6 +111,7 @@ export default class RemoteBackup extends BasePlugin {
             type: this.storage.getItem(taskTypeKey) as TaskType,
             cronScheduler: this.storage.getItem(taskCronKey),
             rebootOnErrors: JSON.parse(this.storage.getItem(taskRebootKey) ?? 'false'),
+            skipNotify: JSON.parse(this.storage.getItem(taskSkipNotify) ?? 'false'),
             runSystemDiagnostic: JSON.parse(this.storage.getItem(taskSystemDiagnostic) ?? 'true'),
             beta: JSON.parse(this.storage.getItem(taskBetaKey) ?? 'false'),
             plugins: JSON.parse(this.storage.getItem(taskPluginsKey as any) as string ?? '[]'),
@@ -145,6 +146,7 @@ export default class RemoteBackup extends BasePlugin {
             runSystemDiagnostic,
             beta,
             maxStats,
+            skipNotify,
         } = task;
 
         let message = ``;
@@ -154,7 +156,7 @@ export default class RemoteBackup extends BasePlugin {
             for (const deviceId of devices) {
                 const device = sdk.systemManager.getDeviceById(deviceId) as unknown as ScryptedDeviceBase & Reboot;
                 logger.log(`Starting ${type} for ${device.name}`);
-                const result = await runValidate(this.diagnosticsPlugin, this.console, deviceId);
+                const result = await runValidate(this.diagnosticsPlugin, logger, deviceId);
                 logger.log(`Result for ${type}-${name}: ${JSON.stringify(result)}`);
                 message += `[${device.name}]: ${result.text}`;
 
@@ -169,7 +171,7 @@ export default class RemoteBackup extends BasePlugin {
 
             if (runSystemDiagnostic) {
                 logger.log(`Starting ${type} for System`);
-                const result = await runValidate(this.diagnosticsPlugin, this.console);
+                const result = await runValidate(this.diagnosticsPlugin, logger);
                 logger.log(`Result for ${type}-System: ${JSON.stringify(result)}`);
                 message += `[System]: ${result.text}`
             }
@@ -223,21 +225,25 @@ export default class RemoteBackup extends BasePlugin {
 
         const { notifier } = this.storageSettings.values;
         if (notifier) {
-            this.console.log(`Sending notification to ${notifier.name}: ${JSON.stringify({ title, message })}`);
-            await notifier.sendNotification(title, {
-                body: message,
-            });
+            if (!skipNotify) {
+                logger.log(`Sending notification to ${notifier.name}: ${JSON.stringify({ title, message })}`);
+                await notifier.sendNotification(title, {
+                    body: message,
+                });
+            } else {
+                logger.log(`Skipping notification`);
+            }
         }
     }
 
     async startTaskCron(task: Task) {
+        const logger = this.getLogger();
         try {
             const {
                 cronScheduler,
                 name,
             } = task;
             if (cronScheduler) {
-                const logger = this.getLogger();
                 logger.log(`Starting scheduler ${name} with cron ${cronScheduler} `);
                 const newTask = cron.schedule(cronScheduler, async () => {
                     await this.executeTask(task);
@@ -246,7 +252,7 @@ export default class RemoteBackup extends BasePlugin {
                 this.cronTasks.push(newTask);
             }
         } catch (e) {
-            this.console.log('Error executing task', task, e);
+            logger.log('Error executing task', task, e);
         }
     }
 
@@ -271,6 +277,18 @@ export default class RemoteBackup extends BasePlugin {
 
         (tasks as string[]).forEach(task => {
             const {
+                beta,
+                cronScheduler,
+                enabled,
+                rebootOnErrors,
+                skipNotify,
+                type,
+                devices,
+                maxStats,
+                plugins,
+                runSystemDiagnostic
+            } = this.getTask(task);
+            const {
                 taskCronKey,
                 taskDevicesKey,
                 taskPluginsKey,
@@ -280,16 +298,24 @@ export default class RemoteBackup extends BasePlugin {
                 taskSystemDiagnostic,
                 taskBetaKey,
                 taskMaxStatsKey,
+                taskSkipNotify
             } = getTaskKeys(task);
-            const taskType = this.storage.getItem(taskTypeKey) as TaskType;
-
+            const group = `Task: ${task}`;
             settings.push(
                 {
                     key: taskEnabledKey,
                     title: 'Enabled',
-                    group: task,
+                    group,
                     type: 'boolean',
-                    value: JSON.parse(this.storage.getItem(taskEnabledKey) ?? 'true'),
+                    value: enabled,
+                    immediate: true,
+                },
+                {
+                    key: taskSkipNotify,
+                    title: 'Skip notification',
+                    group,
+                    type: 'boolean',
+                    value: skipNotify,
                     immediate: true,
                 },
                 {
@@ -297,8 +323,8 @@ export default class RemoteBackup extends BasePlugin {
                     title: 'Task type',
                     type: 'string',
                     choices: Object.keys(TaskType),
-                    value: taskType,
-                    group: task,
+                    value: type,
+                    group,
                     immediate: true
                 },
                 {
@@ -306,33 +332,33 @@ export default class RemoteBackup extends BasePlugin {
                     title: 'Cron',
                     description: 'Cron string',
                     type: 'string',
-                    value: this.storage.getItem(taskCronKey),
+                    value: cronScheduler,
                     placeholder: '0 */6 * * *',
-                    group: task,
+                    group,
                 }
             );
 
-            if (taskType === TaskType.RestartPlugins) {
+            if (type === TaskType.RestartPlugins) {
                 settings.push({
                     key: taskPluginsKey,
                     title: 'Plugins',
-                    group: task,
+                    group,
                     type: 'device',
-                    value: JSON.parse(this.storage.getItem(taskPluginsKey as any) as string ?? '[]'),
+                    value: plugins,
                     deviceFilter: `(interfaces.includes('${ScryptedInterface.ScryptedPlugin}'))`,
                     multiple: true,
                     combobox: true,
                 });
             }
 
-            if (taskType === TaskType.UpdatePlugins) {
+            if (type === TaskType.UpdatePlugins) {
                 settings.push(
                     {
                         key: taskPluginsKey,
                         title: 'Plugins',
-                        group: task,
+                        group,
                         type: 'device',
-                        value: JSON.parse(this.storage.getItem(taskPluginsKey as any) as string ?? '[]'),
+                        value: plugins,
                         deviceFilter: `(interfaces.includes('${ScryptedInterface.ScryptedPlugin}'))`,
                         multiple: true,
                         combobox: true,
@@ -340,22 +366,22 @@ export default class RemoteBackup extends BasePlugin {
                     {
                         key: taskBetaKey,
                         title: 'Use Beta versions',
-                        group: task,
+                        group,
                         type: 'boolean',
-                        value: JSON.parse(this.storage.getItem(taskBetaKey) ?? 'false'),
+                        value: beta,
                         immediate: true,
                     }
                 );
             }
 
-            if (taskType === TaskType.RestartCameras) {
+            if (type === TaskType.RestartCameras) {
                 settings.push(
                     {
                         key: taskDevicesKey,
                         title: 'Cameras',
-                        group: task,
+                        group,
                         type: 'device',
-                        value: JSON.parse(this.storage.getItem(taskDevicesKey as any) as string ?? '[]'),
+                        value: devices,
                         deviceFilter: `type === '${ScryptedDeviceType.Camera}' || type === '${ScryptedDeviceType.Doorbell}'`,
                         immediate: true,
                         multiple: true,
@@ -364,14 +390,14 @@ export default class RemoteBackup extends BasePlugin {
                 );
             }
 
-            if (taskType === TaskType.Diagnostics) {
+            if (type === TaskType.Diagnostics) {
                 settings.push(
                     {
                         key: taskDevicesKey,
                         title: 'Devices',
-                        group: task,
+                        group,
                         type: 'device',
-                        value: JSON.parse(this.storage.getItem(taskDevicesKey as any) as string ?? '[]'),
+                        value: devices,
                         deviceFilter: `type === '${ScryptedDeviceType.Camera}' || type === '${ScryptedDeviceType.Doorbell}'  || type === '${ScryptedDeviceType.Notifier}'`,
                         immediate: true,
                         multiple: true,
@@ -380,30 +406,30 @@ export default class RemoteBackup extends BasePlugin {
                     {
                         key: taskSystemDiagnostic,
                         title: 'Execute system diagnostic',
-                        group: task,
+                        group,
                         type: 'boolean',
-                        value: JSON.parse(this.storage.getItem(taskSystemDiagnostic) ?? 'true'),
+                        value: runSystemDiagnostic,
                         immediate: true,
                     },
                     {
                         key: taskRebootKey,
                         title: 'Reboot cameras on errors',
-                        group: task,
+                        group,
                         type: 'boolean',
-                        value: JSON.parse(this.storage.getItem(taskRebootKey) ?? '[]'),
+                        value: rebootOnErrors,
                         immediate: true,
                     },
                 );
             }
 
-            if (taskType === TaskType.ReportPluginsStatus) {
+            if (type === TaskType.ReportPluginsStatus) {
                 settings.push(
                     {
                         key: taskMaxStatsKey,
                         title: 'Max elements to report',
-                        group: task,
+                        group,
                         type: 'number',
-                        value: JSON.parse(this.storage.getItem(taskMaxStatsKey as any) as string ?? '5'),
+                        value: maxStats,
                     }
                 );
             }
