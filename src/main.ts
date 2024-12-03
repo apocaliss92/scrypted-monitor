@@ -1,19 +1,20 @@
-import sdk, { Reboot, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting, SettingValue } from "@scrypted/sdk";
+import sdk, { Notifier, Reboot, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting, SettingValue } from "@scrypted/sdk";
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
 import cron, { ScheduledTask } from 'node-cron';
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
-import { getPluginStats, getTaskChecksum, getTaskKeys, restartPlugin, runValidate, Task, TaskType, updatePlugin } from "./utils";
+import { getAllPlugins, getPluginStats, getTaskChecksum, getTaskKeys, pluginHasUpdate, restartPlugin, runValidate, Task, TaskType, updatePlugin } from "./utils";
 import DiagnosticsPlugin from './diagnostics/main.nodejs.js';
 
 export default class RemoteBackup extends BasePlugin {
     private cronTasks: ScheduledTask[] = [];
     private currentChecksum: string;
-    private diagnosticsPlugin;
+    private diagnosticsPlugin: any;
     private tasksCheckListener: NodeJS.Timeout;
     storageSettings = new StorageSettings(this, {
         ...getBaseSettings({
             onPluginSwitch: (_, enabled) => this.startStop(enabled),
             hideMqtt: true,
+            hideHa: false,
         }),
         tasks: {
             title: 'Tasks',
@@ -104,6 +105,11 @@ export default class RemoteBackup extends BasePlugin {
             taskBetaKey,
             taskMaxStatsKey,
             taskSkipNotify,
+            taskCheckAllPluginsVersion,
+            taskBatteryThreshold,
+            taskEntitiesToAlwaysReport,
+            taskEntitiesToExclude,
+            taskAdditionalNotifiers,
         } = getTaskKeys(taskName);
 
         return {
@@ -116,8 +122,13 @@ export default class RemoteBackup extends BasePlugin {
             beta: JSON.parse(this.storage.getItem(taskBetaKey) ?? 'false'),
             plugins: JSON.parse(this.storage.getItem(taskPluginsKey as any) as string ?? '[]'),
             devices: JSON.parse(this.storage.getItem(taskDevicesKey as any) as string ?? '[]'),
+            additionalNotifiers: JSON.parse(this.storage.getItem(taskAdditionalNotifiers as any) as string ?? '[]'),
             enabled: JSON.parse(this.storage.getItem(taskEnabledKey) ?? 'true'),
+            checkAllPlugins: JSON.parse(this.storage.getItem(taskCheckAllPluginsVersion) ?? 'true'),
             maxStats: JSON.parse(this.storage.getItem(taskMaxStatsKey) ?? '5'),
+            entitiesToAlwaysReport: JSON.parse(this.storage.getItem(taskEntitiesToAlwaysReport as any) as string ?? '[]'),
+            entitiesToExclude: JSON.parse(this.storage.getItem(taskEntitiesToExclude as any) as string ?? '[]'),
+            batteryThreshold: JSON.parse(this.storage.getItem(taskBatteryThreshold) ?? '30'),
         };
     }
 
@@ -147,6 +158,11 @@ export default class RemoteBackup extends BasePlugin {
             beta,
             maxStats,
             skipNotify,
+            checkAllPlugins,
+            batteryThreshold,
+            entitiesToAlwaysReport,
+            entitiesToExclude,
+            additionalNotifiers
         } = task;
 
         let message = ``;
@@ -190,11 +206,31 @@ export default class RemoteBackup extends BasePlugin {
                 const { manufacturer, version } = plugin.info;
 
                 logger.log(`Updating plugin ${manufacturer}`);
-                const result = await updatePlugin(logger, manufacturer, version, beta);
-                if (result.updated) {
-                    message += `[${manufacturer}]: Updated ${version} -> ${result.newVersion}\n`;
+                const newVersion = await updatePlugin(logger, manufacturer, version, beta);
+                if (newVersion) {
+                    message += `[${manufacturer}]: Updated ${version} -> ${newVersion}\n`;
                 } else {
                     message += `[${manufacturer}]: Already on latest version ${version}\n`;
+                }
+            }
+
+            if (checkAllPlugins) {
+                const otherPlugins = getAllPlugins().map(pluginName => {
+                    return sdk.systemManager.getDeviceByName(pluginName);
+                }).filter(plugin => !plugins.includes(plugin.id));
+                logger.log(`Checking other plugins: ${otherPlugins.map(plugin => plugin.name)}`);
+
+                let somePluginOutdated = false;
+                for (const plugin of otherPlugins) {
+                    const { manufacturer, version } = plugin.info;
+                    const { newVersion } = await pluginHasUpdate(logger, manufacturer, version, beta);
+                    if (newVersion) {
+                        somePluginOutdated = true;
+                        message += `[${manufacturer}]: New version available ${newVersion}\n`;
+                    }
+                }
+                if (!somePluginOutdated) {
+                    message += `\nAll the other plugins are on the latest version\n`;
                 }
             }
         } else if (type === TaskType.ReportPluginsStatus) {
@@ -221,18 +257,50 @@ export default class RemoteBackup extends BasePlugin {
                 message += `[${device.name}] Restarted\n`;
                 await device.reboot();
             }
-        }
+        } else if (type === TaskType.ReportHaBatteryStatus) {
+            logger.log(`Reporting HA battery statuses`);
+            const haApi = await this.getHaApi();
+            const statuses = await haApi.getStatesDate();
+            let atLeast1LowBattery = false;
 
-        const { notifier } = this.storageSettings.values;
-        if (notifier) {
-            if (!skipNotify) {
-                logger.log(`Sending notification to ${notifier.name}: ${JSON.stringify({ title, message })}`);
-                await notifier.sendNotification(title, {
+            statuses.data.forEach(entity => {
+                if (!entitiesToExclude.includes(entity.entity_id) && entity.attributes.device_class === 'battery') {
+                    if (entity.entity_id.startsWith('sensor.')) {
+                        if (Number(entity.state ?? -1) < batteryThreshold || entitiesToAlwaysReport.includes(entity.entity_id)) {
+                            message += `${entity?.attributes?.friendly_name} (${entity.state}%)\n`;
+                            atLeast1LowBattery = true;
+                        }
+                    } else if (entity.entity_id.startsWith('binary_sensor.')) {
+                        if (entity.state === 'on' || entitiesToAlwaysReport.includes(entity.entity_id)) {
+                            message += `${entity?.attributes?.friendly_name}\n`;
+                            atLeast1LowBattery = true;
+                        }
+                    }
+                }
+            });
+            if (!atLeast1LowBattery) {
+                message += `All batteries ok\n`;
+            }
+        }
+        if (!skipNotify) {
+            const { notifier } = this.storageSettings.values;
+            const notifiers: (ScryptedDeviceBase & Notifier)[] = [];
+            if (additionalNotifiers) {
+                for (const notifierId of additionalNotifiers) {
+                    notifiers.push(sdk.systemManager.getDeviceById(notifierId) as unknown as (ScryptedDeviceBase & Notifier));
+                }
+            } else if (notifier) {
+                notifiers.push(notifier);
+            }
+
+            for (const notifierDevice of notifiers) {
+                logger.log(`Sending notification to ${notifierDevice.name}: ${JSON.stringify({ title, message })}`);
+                await notifierDevice.sendNotification(title, {
                     body: message,
                 });
-            } else {
-                logger.log(`Skipping notification`);
             }
+        } else {
+            logger.log(`Skipping notification`);
         }
     }
 
@@ -286,7 +354,12 @@ export default class RemoteBackup extends BasePlugin {
                 devices,
                 maxStats,
                 plugins,
-                runSystemDiagnostic
+                runSystemDiagnostic,
+                checkAllPlugins,
+                batteryThreshold,
+                entitiesToAlwaysReport,
+                entitiesToExclude,
+                additionalNotifiers,
             } = this.getTask(task);
             const {
                 taskCronKey,
@@ -298,7 +371,12 @@ export default class RemoteBackup extends BasePlugin {
                 taskSystemDiagnostic,
                 taskBetaKey,
                 taskMaxStatsKey,
-                taskSkipNotify
+                taskSkipNotify,
+                taskCheckAllPluginsVersion,
+                taskBatteryThreshold,
+                taskEntitiesToAlwaysReport,
+                taskEntitiesToExclude,
+                taskAdditionalNotifiers,
             } = getTaskKeys(task);
             const group = `Task: ${task}`;
             settings.push(
@@ -338,6 +416,19 @@ export default class RemoteBackup extends BasePlugin {
                 }
             );
 
+            if (!skipNotify) {
+                settings.push({
+                    key: taskAdditionalNotifiers,
+                    title: 'Override notifiers',
+                    type: 'device',
+                    deviceFilter: `(type === '${ScryptedDeviceType.Notifier}')`,
+                    multiple: true,
+                    combobox: true,
+                    value: additionalNotifiers,
+                    group,
+                });
+            }
+
             if (type === TaskType.RestartPlugins) {
                 settings.push({
                     key: taskPluginsKey,
@@ -370,7 +461,15 @@ export default class RemoteBackup extends BasePlugin {
                         type: 'boolean',
                         value: beta,
                         immediate: true,
-                    }
+                    },
+                    {
+                        key: taskCheckAllPluginsVersion,
+                        title: 'Check other plugins',
+                        group,
+                        type: 'boolean',
+                        value: checkAllPlugins,
+                        immediate: true,
+                    },
                 );
             }
 
@@ -430,6 +529,36 @@ export default class RemoteBackup extends BasePlugin {
                         group,
                         type: 'number',
                         value: maxStats,
+                    }
+                );
+            }
+
+            if (type === TaskType.ReportHaBatteryStatus) {
+                settings.push(
+                    {
+                        key: taskBatteryThreshold,
+                        title: 'Battery threshold',
+                        group,
+                        type: 'number',
+                        value: batteryThreshold,
+                    },
+                    {
+                        key: taskEntitiesToAlwaysReport,
+                        title: 'Entities to always report',
+                        group,
+                        type: 'string',
+                        value: entitiesToAlwaysReport,
+                        multiple: true,
+                        combobox: true,
+                    },
+                    {
+                        key: taskEntitiesToExclude,
+                        title: 'Entities to exclude',
+                        group,
+                        type: 'string',
+                        value: entitiesToExclude,
+                        multiple: true,
+                        combobox: true,
                     }
                 );
             }

@@ -8,6 +8,7 @@ export enum TaskType {
     Diagnostics = 'Diagnostics',
     RestartCameras = 'RestartCameras',
     ReportPluginsStatus = 'ReportPluginsStatus',
+    ReportHaBatteryStatus = 'ReportHaBatteryStatus',
 }
 
 export interface PluginUpdateCheck {
@@ -30,10 +31,15 @@ export interface Task {
     enabled: boolean;
     beta: boolean;
     skipNotify: boolean;
+    checkAllPlugins?: boolean;
     maxStats?: number;
     runSystemDiagnostic?: boolean;
     plugins?: string[];
     devices?: string[];
+    additionalNotifiers?: string[];
+    batteryThreshold?: number;
+    entitiesToAlwaysReport?: string[];
+    entitiesToExclude?: string[];
 }
 
 const throttles = new Map<string, () => Promise<any>>();
@@ -126,16 +132,7 @@ export interface ClusterWorker {
     forks: ClusterFork[];
 }
 
-export const getPluginStats = async (maxStats = 5) => {
-    const plugins = await sdk.systemManager.getComponent(
-        "plugins"
-    );
-    const stats: PluginStats = {
-        rpcObjects: [],
-        connections: [],
-        pendingResults: [],
-    }
-
+export const getAllPlugins = () => {
     const pluginNames = Object.keys(sdk.systemManager.getSystemState())
         .filter(id => {
             const d = sdk.systemManager.getDeviceById(id);
@@ -144,6 +141,20 @@ export const getPluginStats = async (maxStats = 5) => {
             const plugin = sdk.systemManager.getDeviceById(pluginId);
             return plugin.info.manufacturer;
         });
+
+    return pluginNames;
+}
+
+export const getPluginStats = async (maxStats = 5) => {
+    const plugins = await sdk.systemManager.getComponent(
+        "plugins"
+    );
+    const pluginNames = getAllPlugins();
+    const stats: PluginStats = {
+        rpcObjects: [],
+        connections: [],
+        pendingResults: [],
+    }
 
     for (const pluginName of pluginNames) {
         const pluginStats: PluginInfo = await plugins.getPluginInfo(pluginName);
@@ -196,17 +207,18 @@ export const getPluginStats = async (maxStats = 5) => {
     return stats;
 }
 
-export const updatePlugin = async (
+export const pluginHasUpdate = async (
     logger: Console,
     pluginName: string,
     currentVersion: string,
     beta?: boolean
 ) => {
+    let newVersion: string;
+
     const versions = await checkNpmUpdate(pluginName, currentVersion, logger);
 
     if (!versions) {
-        logger.log(`No data found for plugin ${pluginName}`);
-        return;
+        return { newVersion, versions };
     }
 
     let versionToUse = versions[0];
@@ -214,21 +226,36 @@ export const updatePlugin = async (
         versionToUse = versions.find(version => version.tag === 'latest');
     }
 
-    let updated: boolean;
-    let newVersion: string;
     if (versionToUse.version !== currentVersion) {
-        updated = true;
         newVersion = versionToUse.version;
+        logger.log(`New version available for ${pluginName}: ${newVersion}`);
+    }
+
+    return { newVersion, versions };
+}
+
+export const updatePlugin = async (
+    logger: Console,
+    pluginName: string,
+    currentVersion: string,
+    beta?: boolean
+) => {
+    const { newVersion, versions } = await pluginHasUpdate(logger, pluginName, currentVersion, beta);
+
+    if (!versions) {
+        logger.log(`No data found for plugin ${pluginName}`);
+        return;
+    }
+
+    if (newVersion) {
         logger.log(`Updating ${pluginName} to version ${newVersion}`);
         const plugins = await sdk.systemManager.getComponent('plugins');
         await plugins.installNpm(pluginName, newVersion);
     } else {
-        updated = false;
         logger.log(`Plugin ${pluginName} is already to latest version ${currentVersion}`);
     }
 
-    return { updated, newVersion };
-
+    return newVersion;
 }
 
 export const getTaskKeys = (taskName: string) => {
@@ -242,6 +269,11 @@ export const getTaskKeys = (taskName: string) => {
     const taskBetaKey = `task:${taskName}:beta`;
     const taskMaxStatsKey = `task:${taskName}:maxStats`;
     const taskSkipNotify = `task:${taskName}:skipNotify`;
+    const taskCheckAllPluginsVersion = `task:${taskName}:checkAllPlugins`;
+    const taskBatteryThreshold = `task:${taskName}:batteryThreshold`;
+    const taskEntitiesToAlwaysReport = `task:${taskName}:entitiesToAlwaysReport`;
+    const taskEntitiesToExclude = `task:${taskName}:entitiesToExclude`;
+    const taskAdditionalNotifiers = `task:${taskName}:additionalNotifiers`;
 
     return {
         taskTypeKey,
@@ -254,6 +286,11 @@ export const getTaskKeys = (taskName: string) => {
         taskBetaKey,
         taskMaxStatsKey,
         taskSkipNotify,
+        taskCheckAllPluginsVersion,
+        taskBatteryThreshold,
+        taskEntitiesToAlwaysReport,
+        taskEntitiesToExclude,
+        taskAdditionalNotifiers,
     }
 }
 

@@ -3,9 +3,9 @@
    "description": "Scrypted plugin to schedule diagnostics, plugin restarts and update",
    "repository": {
       "type": "git",
-      "url": "https://github.com/apocaliss92/scrypted-plugins-monitor"
+      "url": "https://github.com/apocaliss92/scrypted-monitor"
    },
-   "version": "0.0.8",
+   "version": "0.0.9",
    "scripts": {
       "scrypted-setup-project": "scrypted-setup-project",
       "prescrypted-setup-project": "scrypted-package-json",
