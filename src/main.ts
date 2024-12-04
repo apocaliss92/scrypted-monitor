@@ -22,6 +22,7 @@ export default class RemoteBackup extends BasePlugin {
             combobox: true,
             type: 'string',
             choices: [],
+            defaultValue: [],
         },
         notifier: {
             title: 'Notifier',
@@ -133,7 +134,7 @@ export default class RemoteBackup extends BasePlugin {
     }
 
     async getTasks() {
-        const { tasks } = this.storageSettings.values;
+        const { tasks = [] } = this.storageSettings.values;
         const taskEntities: Task[] = [];
 
         tasks.forEach((taskName: string) => {
