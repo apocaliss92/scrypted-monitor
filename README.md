@@ -8,6 +8,8 @@ Scrypted plugin that can run the following actions on a scheduled base:
 - Diagnostics on devices and system
 - Restart cameras
 - Report plugin status (basically the data shown on the management plugins page)
+- Report HA batteries status (fetches from HA the battery entities and reports the critical ones)
+- Tomorrow events HA (fetches from HA the tomorrow's calendar events)
 
 The result of the runs can be sent on a notifier
 

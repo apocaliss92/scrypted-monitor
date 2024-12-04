@@ -4,6 +4,7 @@ import cron, { ScheduledTask } from 'node-cron';
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
 import { getAllPlugins, getPluginStats, getTaskChecksum, getTaskKeys, pluginHasUpdate, restartPlugin, runValidate, Task, TaskType, updatePlugin } from "./utils";
 import DiagnosticsPlugin from './diagnostics/main.nodejs.js';
+import moment from "moment";
 
 export default class RemoteBackup extends BasePlugin {
     private cronTasks: ScheduledTask[] = [];
@@ -111,6 +112,7 @@ export default class RemoteBackup extends BasePlugin {
             taskEntitiesToAlwaysReport,
             taskEntitiesToExclude,
             taskAdditionalNotifiers,
+            taskCalendarEntity
         } = getTaskKeys(taskName);
 
         return {
@@ -130,6 +132,7 @@ export default class RemoteBackup extends BasePlugin {
             entitiesToAlwaysReport: JSON.parse(this.storage.getItem(taskEntitiesToAlwaysReport as any) as string ?? '[]'),
             entitiesToExclude: JSON.parse(this.storage.getItem(taskEntitiesToExclude as any) as string ?? '[]'),
             batteryThreshold: JSON.parse(this.storage.getItem(taskBatteryThreshold) ?? '30'),
+            calendarEntity: this.storage.getItem(taskCalendarEntity as any) as string,
         };
     }
 
@@ -163,11 +166,14 @@ export default class RemoteBackup extends BasePlugin {
             batteryThreshold,
             entitiesToAlwaysReport,
             entitiesToExclude,
-            additionalNotifiers
+            additionalNotifiers,
+            calendarEntity,
         } = task;
 
         let message = ``;
         const title = `Task ${name} (${type})`;
+        let priority;
+        let forceStop;
 
         if (type === TaskType.Diagnostics) {
             for (const deviceId of devices) {
@@ -282,11 +288,34 @@ export default class RemoteBackup extends BasePlugin {
             if (!atLeast1LowBattery) {
                 message += `All batteries ok\n`;
             }
+        } else if (type === TaskType.TomorrowEventsHa) {
+            logger.log(`Reporting tomorrow HA calendar events`);
+            const haApi = await this.getHaApi();
+            const fromDate = moment().add(1, 'days').startOf('day').toISOString().replace('T', ' ').split('.')[0];
+            const endDate = moment().add(1, 'days').endOf('day').toISOString().replace('T', ' ').split('.')[0];
+            const eventsResponse = await haApi.getCalendarEvents(
+                calendarEntity,
+                fromDate,
+                endDate,
+            );
+            const events = eventsResponse.data.service_response[calendarEntity]?.events;
+            logger.log(`Events found: `, events);
+
+            for (const event of events) {
+                message += `${event.summary}\n`;
+            }
+
+            if (!events.length) {
+                forceStop = true;
+            }
+
+            priority = 1;
         }
-        if (!skipNotify) {
+
+        if (!skipNotify && !forceStop) {
             const { notifier } = this.storageSettings.values;
             const notifiers: (ScryptedDeviceBase & Notifier)[] = [];
-            if (additionalNotifiers) {
+            if (additionalNotifiers?.length) {
                 for (const notifierId of additionalNotifiers) {
                     notifiers.push(sdk.systemManager.getDeviceById(notifierId) as unknown as (ScryptedDeviceBase & Notifier));
                 }
@@ -298,6 +327,11 @@ export default class RemoteBackup extends BasePlugin {
                 logger.log(`Sending notification to ${notifierDevice.name}: ${JSON.stringify({ title, message })}`);
                 await notifierDevice.sendNotification(title, {
                     body: message,
+                    data: {
+                        pushover: {
+                            priority
+                        }
+                    }
                 });
             }
         } else {
@@ -361,6 +395,7 @@ export default class RemoteBackup extends BasePlugin {
                 entitiesToAlwaysReport,
                 entitiesToExclude,
                 additionalNotifiers,
+                calendarEntity
             } = this.getTask(task);
             const {
                 taskCronKey,
@@ -378,6 +413,7 @@ export default class RemoteBackup extends BasePlugin {
                 taskEntitiesToAlwaysReport,
                 taskEntitiesToExclude,
                 taskAdditionalNotifiers,
+                taskCalendarEntity
             } = getTaskKeys(task);
             const group = `Task: ${task}`;
             settings.push(
@@ -560,6 +596,18 @@ export default class RemoteBackup extends BasePlugin {
                         value: entitiesToExclude,
                         multiple: true,
                         combobox: true,
+                    }
+                );
+            }
+
+            if (type === TaskType.TomorrowEventsHa) {
+                settings.push(
+                    {
+                        key: taskCalendarEntity,
+                        title: 'Calendar entity to report',
+                        group,
+                        type: 'string',
+                        value: calendarEntity,
                     }
                 );
             }

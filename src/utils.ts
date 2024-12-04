@@ -9,6 +9,7 @@ export enum TaskType {
     RestartCameras = 'RestartCameras',
     ReportPluginsStatus = 'ReportPluginsStatus',
     ReportHaBatteryStatus = 'ReportHaBatteryStatus',
+    TomorrowEventsHa = 'TomorrowEventsHa',
 }
 
 export interface PluginUpdateCheck {
@@ -22,6 +23,23 @@ export interface NpmVersion {
     tag: string;
     time: string;
 }
+
+export enum NotificationPriority {
+    VeryLow = "VeryLow",
+    Low = "Low",
+    Normal = "Normal",
+    High = "High",
+    Emergency = "Emergency"
+}
+
+export const priorityMap = {
+    [NotificationPriority.VeryLow]: -2,
+    [NotificationPriority.Low]: -1,
+    [NotificationPriority.Normal]: 0,
+    [NotificationPriority.High]: 1,
+    [NotificationPriority.Emergency]: 2,
+}
+
 
 export interface Task {
     name: string;
@@ -40,6 +58,8 @@ export interface Task {
     batteryThreshold?: number;
     entitiesToAlwaysReport?: string[];
     entitiesToExclude?: string[];
+    calendarEntity?: string;
+    priority?: NotificationPriority;
 }
 
 const throttles = new Map<string, () => Promise<any>>();
@@ -274,6 +294,7 @@ export const getTaskKeys = (taskName: string) => {
     const taskEntitiesToAlwaysReport = `task:${taskName}:entitiesToAlwaysReport`;
     const taskEntitiesToExclude = `task:${taskName}:entitiesToExclude`;
     const taskAdditionalNotifiers = `task:${taskName}:additionalNotifiers`;
+    const taskCalendarEntity = `task:${taskName}:calendarEntity`;
 
     return {
         taskTypeKey,
@@ -291,6 +312,7 @@ export const getTaskKeys = (taskName: string) => {
         taskEntitiesToAlwaysReport,
         taskEntitiesToExclude,
         taskAdditionalNotifiers,
+        taskCalendarEntity,
     }
 }
 
