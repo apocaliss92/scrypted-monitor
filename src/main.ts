@@ -1,10 +1,11 @@
-import sdk, { Notifier, Reboot, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting, SettingValue } from "@scrypted/sdk";
+import sdk, { Notifier, Reboot, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting } from "@scrypted/sdk";
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
 import cron, { ScheduledTask } from 'node-cron';
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
-import { getAllPlugins, getPluginStats, getTaskChecksum, getTaskKeys, pluginHasUpdate, restartPlugin, runValidate, Task, TaskType, updatePlugin } from "./utils";
+import { getAllPlugins, getPluginStats, getTaskChecksum, getTaskKeys, pluginHasUpdate, restartScrypted, restartPlugin, runValidate, Task, TaskType, updatePlugin } from "./utils";
 import DiagnosticsPlugin from './diagnostics/main.nodejs.js';
 import moment from "moment";
+import { scrypted } from '../package.json'
 
 export default class RemoteBackup extends BasePlugin {
     private cronTasks: ScheduledTask[] = [];
@@ -175,6 +176,8 @@ export default class RemoteBackup extends BasePlugin {
         let priority;
         let forceStop;
 
+        let actionsToDefer: () => Promise<void>;
+
         if (type === TaskType.Diagnostics) {
             for (const deviceId of devices) {
                 const device = sdk.systemManager.getDeviceById(deviceId) as unknown as ScryptedDeviceBase & Reboot;
@@ -199,13 +202,24 @@ export default class RemoteBackup extends BasePlugin {
                 message += `[System]: ${result.text}`
             }
         } else if (type === TaskType.RestartPlugins) {
+            let shouldSelfRestart = false;
             for (const pluginId of plugins) {
                 const plugin = sdk.systemManager.getDeviceById(pluginId);
                 const packageName = plugin.info.manufacturer;
-
                 logger.log(`Restarting plugin ${packageName}`);
-                await restartPlugin(packageName);
+
+                if (packageName === scrypted.name) {
+                    shouldSelfRestart = true;
+                } else {
+                    await restartPlugin(packageName);
+                }
                 message += `[${packageName}]: Restarted\n`;
+            }
+
+            if (shouldSelfRestart) {
+                actionsToDefer = async () => {
+                    await restartPlugin(scrypted.name);
+                }
             }
         } else if (type === TaskType.UpdatePlugins) {
             for (const pluginId of plugins) {
@@ -311,6 +325,15 @@ export default class RemoteBackup extends BasePlugin {
 
             priority = 1;
         }
+        // else if (type === TaskType.RestartScrypted) {
+        //     logger.log(`Restarting scrypted`);
+
+        //     message += `Scrypted restarted`;
+
+        //     actionsToDefer = async () => {
+        //         await restartScrypted();
+        //     }
+        // }
 
         if (!skipNotify && !forceStop) {
             const { notifier } = this.storageSettings.values;
@@ -336,6 +359,10 @@ export default class RemoteBackup extends BasePlugin {
             }
         } else {
             logger.log(`Skipping notification`);
+        }
+
+        if (actionsToDefer) {
+            await actionsToDefer();
         }
     }
 

@@ -10,6 +10,7 @@ export enum TaskType {
     ReportPluginsStatus = 'ReportPluginsStatus',
     ReportHaBatteryStatus = 'ReportHaBatteryStatus',
     TomorrowEventsHa = 'TomorrowEventsHa',
+    // RestartScrypted = 'RestartScrypted',
 }
 
 export interface PluginUpdateCheck {
@@ -379,4 +380,10 @@ export const runValidate = async (diagnosticsPlugin: any, console: Console, devi
 
 export const getTaskChecksum = (task: Task) => {
     return JSON.stringify(task);
+}
+
+export const restartScrypted = async () => {
+    const serviceControl = await sdk.systemManager.getComponent("service-control");
+    await serviceControl.exit().catch(() => { });
+    await serviceControl.restart();
 }
