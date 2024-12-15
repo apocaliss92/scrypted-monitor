@@ -10,7 +10,7 @@ export enum TaskType {
     ReportPluginsStatus = 'ReportPluginsStatus',
     ReportHaBatteryStatus = 'ReportHaBatteryStatus',
     TomorrowEventsHa = 'TomorrowEventsHa',
-    // RestartScrypted = 'RestartScrypted',
+    RestartScrypted = 'RestartScrypted',
     JsScript = 'JsScript',
 }
 

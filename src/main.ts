@@ -365,15 +365,15 @@ export default class RemoteBackup extends BasePlugin {
                 priority = 1;
             }
         }
-        // else if (type === TaskType.RestartScrypted) {
-        //     logger.log(`Restarting scrypted`);
+        else if (type === TaskType.RestartScrypted) {
+            logger.log(`Restarting scrypted`);
 
-        //     message += `Scrypted restarted`;
+            message += `Scrypted restarted`;
 
-        //     actionsToDefer = async () => {
-        //         await restartScrypted();
-        //     }
-        // }
+            actionsToDefer = async () => {
+                await restartScrypted();
+            }
+        }
 
         if (!skipNotify && !forceStop) {
             const { notifier } = this.storageSettings.values;
