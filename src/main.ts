@@ -210,7 +210,7 @@ export default class RemoteBackup extends BasePlugin {
                 const packageName = plugin.info.manufacturer;
                 logger.log(`Restarting plugin ${packageName}`);
 
-                if (packageName === scrypted.name) {
+                if ([scrypted.name, '@scrypted/core'].includes(packageName)) {
                     shouldSelfRestart = true;
                 } else {
                     await restartPlugin(packageName);
