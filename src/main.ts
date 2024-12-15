@@ -3,9 +3,11 @@ import { StorageSettings } from "@scrypted/sdk/storage-settings";
 import cron, { ScheduledTask } from 'node-cron';
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
 import { getAllPlugins, getPluginStats, getTaskChecksum, getTaskKeys, pluginHasUpdate, restartScrypted, restartPlugin, runValidate, Task, TaskType, updatePlugin } from "./utils";
-import DiagnosticsPlugin from './diagnostics/main.nodejs.js';
 import moment from "moment";
+import DiagnosticsPlugin from '../../scrypted/plugins/diagnostics/src/main';
 import { scrypted } from '../package.json'
+
+const divider = '-------------\n';
 
 export default class RemoteBackup extends BasePlugin {
     private cronTasks: ScheduledTask[] = [];
@@ -172,7 +174,7 @@ export default class RemoteBackup extends BasePlugin {
         } = task;
 
         let message = ``;
-        const title = `Task ${name} (${type})`;
+        const title = `${name}`;
         let priority;
         let forceStop;
 
@@ -258,7 +260,6 @@ export default class RemoteBackup extends BasePlugin {
             const stats = await getPluginStats(maxStats);
             logger.log(`Current stats: ${JSON.stringify(stats)}`);
 
-            const divider = '-------------\n';
             message += `[RPC Objects]\n${divider}`;
             stats.rpcObjects.forEach(item => message += `${item.name}: ${item.count}\n`);
             message += `${divider}[Pending Results]\n${divider}`;
@@ -283,23 +284,41 @@ export default class RemoteBackup extends BasePlugin {
             const haApi = await this.getHaApi();
             const statuses = await haApi.getStatesDate();
             let atLeast1LowBattery = false;
+            const trackedEntries: string[] = [];
 
             statuses.data.forEach(entity => {
                 if (!entitiesToExclude.includes(entity.entity_id) && entity.attributes.device_class === 'battery') {
                     if (entity.entity_id.startsWith('sensor.')) {
-                        if (Number(entity.state ?? -1) < batteryThreshold || entitiesToAlwaysReport.includes(entity.entity_id)) {
-                            message += `${entity?.attributes?.friendly_name} (${entity.state}%)\n`;
+                        const messageToAdd = `${entity?.attributes?.friendly_name} (${entity.state}%)`;
+                        if (entitiesToAlwaysReport.includes(entity.entity_id)) {
+                            trackedEntries.push(messageToAdd);
+                        } else if (Number(entity.state ?? -1) < batteryThreshold) {
+                            message += `${messageToAdd}\n`;
                             atLeast1LowBattery = true;
                         }
                     } else if (entity.entity_id.startsWith('binary_sensor.')) {
-                        if (entity.state === 'on' || entitiesToAlwaysReport.includes(entity.entity_id)) {
-                            message += `${entity?.attributes?.friendly_name}\n`;
+                        const messageToAdd = `${entity?.attributes?.friendly_name}`;
+                        if (entitiesToAlwaysReport.includes(entity.entity_id)) {
+                            trackedEntries.push(messageToAdd);
+                        } else if (entity.state === 'on') {
+                            message += `${messageToAdd}\n`;
                             atLeast1LowBattery = true;
                         }
                     }
                 }
             });
-            if (!atLeast1LowBattery) {
+
+            if (trackedEntries.length) {
+                if (atLeast1LowBattery) {
+                    message += divider;
+                }
+
+                for (const trackedEntry of trackedEntries) {
+                    message += `${trackedEntry}\n`
+                }
+            }
+
+            if (!atLeast1LowBattery && !trackedEntries.length) {
                 message += `All batteries ok\n`;
             }
         } else if (type === TaskType.TomorrowEventsHa) {
@@ -307,23 +326,44 @@ export default class RemoteBackup extends BasePlugin {
             const haApi = await this.getHaApi();
             const fromDate = moment().add(1, 'days').startOf('day').toISOString().replace('T', ' ').split('.')[0];
             const endDate = moment().add(1, 'days').endOf('day').toISOString().replace('T', ' ').split('.')[0];
+            const endDateWeek = moment().add(14, 'days').endOf('day').toISOString().replace('T', ' ').split('.')[0];
             const eventsResponse = await haApi.getCalendarEvents(
                 calendarEntity,
                 fromDate,
                 endDate,
             );
+            const eventsResponseWeek = await haApi.getCalendarEvents(
+                calendarEntity,
+                endDate,
+                endDateWeek,
+            );
             const events = eventsResponse.data.service_response[calendarEntity]?.events;
-            logger.log(`Events found: `, events);
+            logger.log(`Events found: ${events}`);
 
             for (const event of events) {
                 message += `${event.summary}\n`;
             }
 
-            if (!events.length) {
+            const eventsNext2Weeks = eventsResponseWeek.data.service_response[calendarEntity]?.events;
+            logger.log(`Next 2 weeks events found ${eventsNext2Weeks}`)
+
+            if (eventsNext2Weeks.length) {
+                if (events.length) {
+                    message += divider;
+                }
+
+                for (const event of eventsNext2Weeks) {
+                    message += `${event.summary} - ${moment(event.start, 'YYYY-MM-DD').locale('it').fromNow()}\n`;
+                }
+            }
+
+            if (!events.length && !eventsNext2Weeks.length) {
                 forceStop = true;
             }
 
-            priority = 1;
+            if (events.length) {
+                priority = 1;
+            }
         }
         // else if (type === TaskType.RestartScrypted) {
         //     logger.log(`Restarting scrypted`);

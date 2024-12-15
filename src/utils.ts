@@ -11,6 +11,7 @@ export enum TaskType {
     ReportHaBatteryStatus = 'ReportHaBatteryStatus',
     TomorrowEventsHa = 'TomorrowEventsHa',
     // RestartScrypted = 'RestartScrypted',
+    JsScript = 'JsScript',
 }
 
 export interface PluginUpdateCheck {
@@ -61,6 +62,7 @@ export interface Task {
     entitiesToExclude?: string[];
     calendarEntity?: string;
     priority?: NotificationPriority;
+    script?: string;
 }
 
 const throttles = new Map<string, () => Promise<any>>();
