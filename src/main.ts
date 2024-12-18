@@ -2,7 +2,7 @@ import sdk, { Notifier, Reboot, ScryptedDeviceBase, ScryptedDeviceType, Scrypted
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
 import cron, { ScheduledTask } from 'node-cron';
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
-import { getAllPlugins, getPluginStats, getTaskChecksum, getTaskKeys, pluginHasUpdate, restartScrypted, restartPlugin, runValidate, Task, TaskType, updatePlugin } from "./utils";
+import { getAllPlugins, getPluginStats, getTaskChecksum, getTaskKeys, pluginHasUpdate, restartScrypted, restartPlugin, runValidate, Task, TaskType, updatePlugin, getStorageInfo } from "./utils";
 import moment from "moment";
 import DiagnosticsPlugin from '../../scrypted/plugins/diagnostics/src/main';
 import { scrypted } from '../package.json'
@@ -224,16 +224,26 @@ export default class RemoteBackup extends BasePlugin {
                 }
             }
         } else if (type === TaskType.UpdatePlugins) {
+            const finalizeVersion = (isBeta: boolean) => {
+                if (isBeta) {
+                    message += ` (beta)`;
+                }
+                message += `\n`;
+            }
+
             for (const pluginId of plugins) {
                 const plugin = sdk.systemManager.getDeviceById(pluginId);
                 const { manufacturer, version } = plugin.info;
 
                 logger.log(`Updating plugin ${manufacturer}`);
-                const newVersion = await updatePlugin(logger, manufacturer, version, beta);
+                const { newVersion, isBeta, versions } = await updatePlugin(logger, manufacturer, version, beta);
                 if (newVersion) {
-                    message += `[${manufacturer}]: Updated ${version} -> ${newVersion}\n`;
+                    message += `[${manufacturer}]: Updated ${version} -> ${newVersion}`;
+                    finalizeVersion(isBeta);
                 } else {
-                    message += `[${manufacturer}]: Already on latest version ${version}\n`;
+                    const versionEntry = versions.find(item => item.version === version);
+                    message += `[${manufacturer}]: Already on latest version ${version}`;
+                    finalizeVersion(versionEntry?.tag === 'beta');
                 }
             }
 
@@ -246,10 +256,11 @@ export default class RemoteBackup extends BasePlugin {
                 let somePluginOutdated = false;
                 for (const plugin of otherPlugins) {
                     const { manufacturer, version } = plugin.info;
-                    const { newVersion } = await pluginHasUpdate(logger, manufacturer, version, beta);
+                    const { newVersion, isBeta } = await pluginHasUpdate(logger, manufacturer, version, beta);
                     if (newVersion) {
                         somePluginOutdated = true;
-                        message += `[${manufacturer}]: New version available ${newVersion}\n`;
+                        message += `[${manufacturer}]: New version available ${newVersion}`;
+                        finalizeVersion(isBeta);
                     }
                 }
                 if (!somePluginOutdated) {
@@ -260,14 +271,23 @@ export default class RemoteBackup extends BasePlugin {
             const stats = await getPluginStats(maxStats);
             logger.log(`Current stats: ${JSON.stringify(stats)}`);
 
-            message += `[RPC Objects]\n${divider}`;
-            stats.rpcObjects.forEach(item => message += `${item.name}: ${item.count}\n`);
-            message += `${divider}[Pending Results]\n${divider}`;
-            stats.pendingResults.forEach(item => message += `${item.name}: ${item.count}\n`);
-            message += `${divider}[Connections]\n${divider}`;
-            stats.connections.forEach(item => message += `${item.name}: ${item.count}`);
+            if (stats.rpcObjects) {
+                message += `[RPC Objects]\n${divider}`;
+                stats.rpcObjects.forEach(item => message += `${item.name}: ${item.count}\n`);
+            }
+
+            if (stats.pendingResults) {
+                message += `${divider}[Pending Results]\n${divider}`;
+                stats.pendingResults.forEach(item => message += `${item.name}: ${item.count}\n`);
+            }
+
+            if (stats.connections.length) {
+                message += `${divider}[Connections]\n${divider}`;
+                stats.connections.forEach(item => message += `${item.name}: ${item.count}\n`);
+            }
+
             if (stats.cluster) {
-                message += `\n${divider}[Workers]\n${divider}`;
+                message += `${divider}[Workers]\n${divider}`;
                 stats.cluster.workers.forEach(item => message += `${item.name}: ${item.count}\n`);
                 message += `${divider}[Devices]\n${divider}`;
                 stats.cluster.devices.forEach(item => message += `${item.name}: ${item.count}\n`);
@@ -364,8 +384,7 @@ export default class RemoteBackup extends BasePlugin {
             if (events.length) {
                 priority = 1;
             }
-        }
-        else if (type === TaskType.RestartScrypted) {
+        } else if (type === TaskType.RestartScrypted) {
             logger.log(`Restarting scrypted`);
 
             message += `Scrypted restarted`;
@@ -373,6 +392,13 @@ export default class RemoteBackup extends BasePlugin {
             actionsToDefer = async () => {
                 await restartScrypted();
             }
+        } else if (type === TaskType.ReportStorageStatus) {
+            logger.log(`Reporting storage status`);
+
+            const { freeSpace, recordingCameras, availableLicenses } = await getStorageInfo();
+            message += `Storage usage: ${freeSpace}\n`;
+            message += `Recording cameras: ${recordingCameras}\n`;
+            message += `Available licenses: ${availableLicenses}\n`;
         }
 
         if (!skipNotify && !forceStop) {

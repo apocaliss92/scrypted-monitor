@@ -1,4 +1,4 @@
-import sdk, { ScryptedInterface, ScryptedNativeId } from "@scrypted/sdk";
+import sdk, { ScryptedInterface, ScryptedNativeId, Settings } from "@scrypted/sdk";
 import { throttle } from "lodash";
 import semver from 'semver';
 
@@ -8,6 +8,7 @@ export enum TaskType {
     Diagnostics = 'Diagnostics',
     RestartCameras = 'RestartCameras',
     ReportPluginsStatus = 'ReportPluginsStatus',
+    ReportStorageStatus = 'ReportStorageStatus',
     ReportHaBatteryStatus = 'ReportHaBatteryStatus',
     TomorrowEventsHa = 'TomorrowEventsHa',
     RestartScrypted = 'RestartScrypted',
@@ -108,6 +109,27 @@ async function checkNpmUpdate(npmPackage: string, npmPackageVersion: string, log
 export const restartPlugin = async (pluginName: string) => {
     const plugins = await sdk.systemManager.getComponent('plugins');
     await plugins.reload(pluginName);
+}
+
+export const getStorageInfo = async () => {
+    const scryptedNvrSettingsId = Object.keys(sdk.systemManager.getSystemState())
+        .find(id => {
+            const d = sdk.systemManager.getDeviceById(id);
+            return (d.interfaces.includes(ScryptedInterface.ScryptedSettings) || d.interfaces.includes("SystemSettings")) && d.name === 'Scrypted NVR';
+        });
+
+    const scryptedNvrSettingsDevice = sdk.systemManager.getDeviceById<Settings>(scryptedNvrSettingsId);
+    const settings = await scryptedNvrSettingsDevice.getSettings();
+
+    const freeSpaceSetting = settings.find(setting => setting.key === 'freeSpace');
+    const cameraStatsSetting = settings.find(setting => setting.key === 'cameraStats');
+    const licenseCountSetting = settings.find(setting => setting.key === 'licenseCount');
+
+    const freeSpace = `${freeSpaceSetting.value}/${freeSpaceSetting.range[1]} ${freeSpaceSetting.placeholder}`;
+    const recordingCameras = cameraStatsSetting.value;
+    const availableLicenses = licenseCountSetting.value;
+
+    return { freeSpace, recordingCameras, availableLicenses };
 }
 
 interface PluginInfo {
@@ -241,7 +263,7 @@ export const pluginHasUpdate = async (
     const versions = await checkNpmUpdate(pluginName, currentVersion, logger);
 
     if (!versions) {
-        return { newVersion, versions };
+        return { newVersion, versions, isBeta: false };
     }
 
     let versionToUse = versions[0];
@@ -253,8 +275,9 @@ export const pluginHasUpdate = async (
         newVersion = versionToUse.version;
         logger.log(`New version available for ${pluginName}: ${newVersion}`);
     }
+    const isBeta = versionToUse.tag === 'beta';
 
-    return { newVersion, versions };
+    return { newVersion, versions, isBeta };
 }
 
 export const updatePlugin = async (
@@ -263,7 +286,7 @@ export const updatePlugin = async (
     currentVersion: string,
     beta?: boolean
 ) => {
-    const { newVersion, versions } = await pluginHasUpdate(logger, pluginName, currentVersion, beta);
+    const { newVersion, versions, isBeta } = await pluginHasUpdate(logger, pluginName, currentVersion, beta);
 
     if (!versions) {
         logger.log(`No data found for plugin ${pluginName}`);
@@ -278,7 +301,7 @@ export const updatePlugin = async (
         logger.log(`Plugin ${pluginName} is already to latest version ${currentVersion}`);
     }
 
-    return newVersion;
+    return { newVersion, isBeta, versions };
 }
 
 export const getTaskKeys = (taskName: string) => {
