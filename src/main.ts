@@ -271,6 +271,12 @@ export default class RemoteBackup extends BasePlugin {
             const stats = await getPluginStats(maxStats);
             logger.log(`Current stats: ${JSON.stringify(stats)}`);
 
+            if (stats.currentObjectDetections) {
+                message += `[Active object detection sessions]\n${divider}`;
+                stats.currentObjectDetections.forEach(item => message += `${item}\n`);
+                message += divider;
+            }
+
             if (stats.rpcObjects) {
                 message += `[RPC Objects]\n${divider}`;
                 stats.rpcObjects.forEach(item => message += `${item.name}: ${item.count}\n`);
@@ -341,6 +347,20 @@ export default class RemoteBackup extends BasePlugin {
             if (!atLeast1LowBattery && !trackedEntries.length) {
                 message += `All batteries ok\n`;
             }
+        } else if (type === TaskType.ReportHaConsumables) {
+            logger.log(`Reporting HA consumables`);
+            const haApi = await this.getHaApi();
+            const statuses = await haApi.getStatesDate();
+
+            statuses.data.forEach(entity => {
+                if (entitiesToAlwaysReport.includes(entity.entity_id)) {
+                    if (entity.attributes.unit_of_measurement === '%') {
+                        message += `${entity.attributes.friendly_name}: ${entity.state} %\n`
+                    } else if (entity.attributes.unit_of_measurement === 'd') {
+                        message += `${entity.attributes.friendly_name}: ${entity.state} days\n`
+                    }
+                }
+            });
         } else if (type === TaskType.TomorrowEventsHa) {
             logger.log(`Reporting tomorrow HA calendar events`);
             const haApi = await this.getHaApi();
@@ -395,10 +415,9 @@ export default class RemoteBackup extends BasePlugin {
         } else if (type === TaskType.ReportStorageStatus) {
             logger.log(`Reporting storage status`);
 
-            const { freeSpace, recordingCameras, availableLicenses } = await getStorageInfo();
+            const { freeSpace, recordingCameras } = await getStorageInfo();
             message += `Storage usage: ${freeSpace}\n`;
             message += `Recording cameras: ${recordingCameras}\n`;
-            message += `Available licenses: ${availableLicenses}\n`;
         }
 
         if (!skipNotify && !forceStop) {
@@ -690,6 +709,27 @@ export default class RemoteBackup extends BasePlugin {
                         multiple: true,
                         combobox: true,
                     }
+                );
+            }
+
+            if (type === TaskType.ReportHaConsumables) {
+                settings.push(
+                    {
+                        key: taskBatteryThreshold,
+                        title: 'Threshold (%)',
+                        group,
+                        type: 'number',
+                        value: batteryThreshold,
+                    },
+                    {
+                        key: taskEntitiesToAlwaysReport,
+                        title: 'Entities to report',
+                        group,
+                        type: 'string',
+                        value: entitiesToAlwaysReport,
+                        multiple: true,
+                        combobox: true,
+                    },
                 );
             }
 

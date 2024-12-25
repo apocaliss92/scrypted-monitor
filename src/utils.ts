@@ -10,6 +10,7 @@ export enum TaskType {
     ReportPluginsStatus = 'ReportPluginsStatus',
     ReportStorageStatus = 'ReportStorageStatus',
     ReportHaBatteryStatus = 'ReportHaBatteryStatus',
+    ReportHaConsumables = 'ReportHaConsumables',
     TomorrowEventsHa = 'TomorrowEventsHa',
     RestartScrypted = 'RestartScrypted',
     JsScript = 'JsScript',
@@ -125,7 +126,9 @@ export const getStorageInfo = async () => {
     const cameraStatsSetting = settings.find(setting => setting.key === 'cameraStats');
     const licenseCountSetting = settings.find(setting => setting.key === 'licenseCount');
 
-    const freeSpace = `${freeSpaceSetting.value}/${freeSpaceSetting.range[1]} ${freeSpaceSetting.placeholder}`;
+    const spaceFreePercentage = (Number(freeSpaceSetting.value) * 100 / Number(freeSpaceSetting.range[1])).toFixed(1);
+
+    const freeSpace = `${freeSpaceSetting.value}/${freeSpaceSetting.range[1]} ${freeSpaceSetting.placeholder} (${spaceFreePercentage}%)`;
     const recordingCameras = cameraStatsSetting.value;
     const availableLicenses = licenseCountSetting.value;
 
@@ -140,6 +143,7 @@ interface PluginInfo {
 }
 
 interface PluginStats {
+    currentObjectDetections: string[];
     rpcObjects: { name: string, count: number }[],
     pendingResults: { name: string, count: number }[],
     connections: { name: string, count: number }[],
@@ -196,9 +200,17 @@ export const getPluginStats = async (maxStats = 5) => {
     );
     const pluginNames = getAllPlugins();
     const stats: PluginStats = {
+        currentObjectDetections: [],
         rpcObjects: [],
         connections: [],
         pendingResults: [],
+    }
+
+    const videoAnalytisPlugin = sdk.systemManager.getDeviceByName('Video Analysis Plugin') as unknown as Settings;
+    if (videoAnalytisPlugin) {
+        const settings = await videoAnalytisPlugin.getSettings();
+        const activeObjectDetections = settings.find(item => item.key === 'activeObjectDetections');
+        stats.currentObjectDetections = (activeObjectDetections.value ?? []) as string[]
     }
 
     for (const pluginName of pluginNames) {

@@ -6,9 +6,12 @@ Scrypted plugin that can run the following actions on a scheduled base:
 - Update plugins specifying beta or only release
 - Restart plugins
 - Diagnostics on devices and system
+- Storage utilization status
 - Restart cameras
+- Restart scrypted server
 - Report plugin status (basically the data shown on the management plugins page)
 - Report HA batteries status (fetches from HA the battery entities and reports the critical ones)
+- Report HA consumables (fetches and reports from HA the %/days statuses)
 - Tomorrow events HA (fetches from HA the tomorrow's calendar events)
 
 The result of the runs can be sent on a notifier
