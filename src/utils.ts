@@ -1,4 +1,4 @@
-import sdk, { ScryptedInterface, ScryptedNativeId, Settings } from "@scrypted/sdk";
+import sdk, { MediaObject, ObjectDetection, ScryptedInterface, ScryptedNativeId, Settings, Image, ClusterForkInterface } from "@scrypted/sdk";
 import { throttle } from "lodash";
 import semver from 'semver';
 
@@ -70,7 +70,7 @@ export interface Task {
 const throttles = new Map<string, () => Promise<any>>();
 const cache: Record<string, PluginUpdateCheck> = {};
 
-async function checkNpmUpdate(npmPackage: string, npmPackageVersion: string, logger: Console): Promise<NpmVersion[]> {
+const checkNpmUpdate = async (npmPackage: string, npmPackageVersion: string, logger: Console): Promise<NpmVersion[]> => {
     try {
         let f = throttles.get(npmPackage);
         if (!f) {
@@ -144,6 +144,8 @@ interface PluginInfo {
 
 interface PluginStats {
     currentObjectDetections: string[];
+    currentMotionDetections: string[];
+    currentActiveStreams: number;
     rpcObjects: { name: string, count: number }[],
     pendingResults: { name: string, count: number }[],
     connections: { name: string, count: number }[],
@@ -151,6 +153,7 @@ interface PluginStats {
         workers: { name: string, count: number }[],
         devices: { name: string, count: number }[],
     }
+    benchmark: Benchmark;
 }
 
 export interface ForkOptions {
@@ -201,9 +204,15 @@ export const getPluginStats = async (maxStats = 5) => {
     const pluginNames = getAllPlugins();
     const stats: PluginStats = {
         currentObjectDetections: [],
+        currentMotionDetections: [],
+        currentActiveStreams: 0,
         rpcObjects: [],
         connections: [],
         pendingResults: [],
+        benchmark: {
+            detectorsStats: [],
+            clusterDps: undefined
+        }
     }
 
     const videoAnalytisPlugin = sdk.systemManager.getDeviceByName('Video Analysis Plugin') as unknown as Settings;
@@ -211,6 +220,15 @@ export const getPluginStats = async (maxStats = 5) => {
         const settings = await videoAnalytisPlugin.getSettings();
         const activeObjectDetections = settings.find(item => item.key === 'activeObjectDetections');
         stats.currentObjectDetections = (activeObjectDetections.value ?? []) as string[]
+        const activeMotionDetections = settings.find(item => item.key === 'activeMotionDetections');
+        stats.currentMotionDetections = (activeMotionDetections.value ?? []) as string[]
+    }
+
+    const adaptiveStreamingPlugin = sdk.systemManager.getDeviceByName('Adaptive Streaming') as unknown as Settings;
+    if (adaptiveStreamingPlugin) {
+        const settings = await adaptiveStreamingPlugin.getSettings();
+        const activeStreams = settings.find(item => item.key === 'active');
+        stats.currentActiveStreams = (activeStreams.value ?? []) as number;
     }
 
     for (const pluginName of pluginNames) {
@@ -260,6 +278,8 @@ export const getPluginStats = async (maxStats = 5) => {
             })).slice(0, maxStats)
         }
     }
+
+    stats.benchmark = await runBenchmark();
 
     return stats;
 }
@@ -424,3 +444,195 @@ export const restartScrypted = async () => {
     await serviceControl.exit().catch(() => { });
     await serviceControl.restart();
 }
+
+interface DetectorStats {
+    time: string;
+    detections: number;
+    detectionRate: string;
+}
+
+interface Benchmark {
+    clusterDps?: number;
+    detectorsStats: DetectorStats[]
+}
+
+export const runBenchmark = async (): Promise<Benchmark> => {
+    const os = require('os');
+    const detectorsStats: DetectorStats[] = [];
+
+    const mo = await sdk.mediaManager.createMediaObjectFromUrl('https://user-images.githubusercontent.com/73924/230690188-7a25983a-0630-44e9-9e2d-b4ac150f1524.jpg');
+    const image = await sdk.mediaManager.convertMediaObject<Image & MediaObject>(mo, 'x-scrypted/x-scrypted-image');
+    const detectors = [
+        '@scrypted/openvino',
+        '@scrypted/coreml',
+        '@scrypted/onnx',
+        '@scrypted/tensorflow-lite',
+        '@scrypted/rknn',
+    ];
+    const simulatedCameras = 4;
+    const batch = 4;
+    const batchesPerCamera = 125;
+
+    const logProgress = (current: number, total: number, startTime: number) => {
+        const percentage = Math.floor((current / total) * 100);
+        const elapsedTime = (Date.now() - startTime) / 1000;
+        const estimatedTotalTime = (elapsedTime / current) * total;
+        const remainingTime = Math.max(0, estimatedTotalTime - elapsedTime);
+        console.log(`Progress: ${percentage}% - Est. remaining time: ${remainingTime.toFixed(1)}s`);
+    }
+
+    const getCPUInfo = () => {
+        try {
+            const cpus = os.cpus();
+            return cpus[0].model;
+        } catch (error) {
+            return 'Not found';
+        }
+    }
+
+    const getMemoryInfo = () => {
+        try {
+            const totalMem = os.totalmem() / (1024 * 1024 * 1024);
+            const freeMem = os.freemem() / (1024 * 1024 * 1024);
+            return `Total: ${totalMem.toFixed(2)} GB, Free: ${freeMem.toFixed(2)} GB`;
+        } catch (error) {
+            return 'Not found';
+        }
+    }
+
+    console.log('########################');
+    console.log(new Date().toLocaleString());
+    console.log('########################');
+    console.log('CPU Model:', getCPUInfo());
+    console.log('Memory:', getMemoryInfo());
+    console.log('OS Release:', os.release() || 'Not found');
+
+    let completedDetections = 0;
+    const runDetector = async (d: ObjectDetection) => {
+        const model = await d.getDetectionModel();
+        console.log('Model', model);
+        const bytes = Buffer.alloc(model.inputSize[0] * model.inputSize[1] * 3);
+        const media = await sdk.mediaManager.createMediaObject(bytes, 'x-scrypted/x-scrypted-image', {
+            sourceId: image.sourceId,
+            width: model.inputSize[0],
+            height: model.inputSize[1],
+            ffmpegFormats: true,
+            format: null,
+            toBuffer: async (options) => bytes,
+            toImage: undefined,
+            close: () => image.close(),
+        })
+        const start = Date.now();
+        let detections = 0;
+        const totalDetections = simulatedCameras * batchesPerCamera * batch;
+
+        console.log("Starting benchmark...");
+
+        let lastLog = start;
+        const simulateCameraDetections = async () => {
+            for (let i = 0; i < batchesPerCamera; i++) {
+                await Promise.all([
+                    d.detectObjects(media, { batch }),
+                    d.detectObjects(media),
+                    d.detectObjects(media),
+                    d.detectObjects(media),
+                ]);
+                detections += batch;
+                completedDetections += batch;
+                const now = Date.now();
+                if (now - lastLog > 3000) {
+                    lastLog = now;
+                    logProgress(detections, totalDetections, start);
+                }
+            }
+        };
+
+        const simulated = [];
+        for (let i = 0; i < simulatedCameras; i++) {
+            simulated.push(simulateCameraDetections());
+        }
+
+        await Promise.all(simulated);
+    }
+
+    const start = Date.now();
+    let totalDetectors = 0;
+    let clusterDps: number;
+    await Promise.allSettled(detectors.map(async id => {
+        const d = sdk.systemManager.getDeviceById<Settings & ObjectDetection & ClusterForkInterface>(id);
+        if (!d) {
+            console.log(`${id} not found, skipping.`);
+            return;
+        }
+
+        console.log(`\nStarting ${id}`);
+        console.log(`${id} Plugin Version:`, d.info?.version || 'Not found');
+
+        const runClusterWorkerDetector = async (d: ObjectDetection & Settings) => {
+            console.log('Settings:');
+            try {
+                const settings = await d.getSettings();
+                for (const setting of settings) {
+                    console.log(`  ${setting.title}: ${setting.value}`);
+                }
+            }
+            catch (error) {
+                console.log('  Unable to retrieve settings');
+            }
+            try {
+                await runDetector(d);
+
+                const end = Date.now();
+                if (!clusterDps)
+                    clusterDps = completedDetections / ((end - start) / 1000);
+
+                const ms = end - start;
+                console.log(`\n${id} benchmark complete:`);
+                console.log(`Total time: ${ms} ms`);
+                const detections = batchesPerCamera * simulatedCameras * batch;
+                const detectionRate = (detections / (ms / 1000)).toFixed(2);
+                console.log(`Total detections: ${detections}`);
+                console.log(`Detection rate: ${detectionRate} detections per second`);
+                totalDetectors++;
+
+                detectorsStats.push({
+                    time: (ms / 1000).toFixed(2),
+                    detections,
+                    detectionRate
+                });
+            }
+            catch (error) {
+                console.log(`Error running benchmark for ${id}:`, error.message);
+            }
+        }
+
+        if (!sdk.clusterManager?.getClusterMode?.()) {
+            await runClusterWorkerDetector(d);
+        }
+        else {
+            const workers = await sdk.clusterManager.getClusterWorkers();
+            await Promise.allSettled(Object.values(workers).map(async worker => {
+                if (!worker.labels.includes(id))
+                    return;
+                const forked = await d.forkInterface<ObjectDetection & Settings>(ScryptedInterface.ObjectDetection, {
+                    clusterWorkerId: worker.id,
+                });
+                console.log('Running on cluster worker', worker.name);
+                await runClusterWorkerDetector(forked);
+            }));
+
+        }
+    }));
+
+    let clusterDpsToReport;
+    if (sdk.clusterManager?.getClusterMode?.()) {
+        console.log(`\nCluster benchmark complete:`);
+        console.log(`Detection rate: ${clusterDps.toFixed(2)} detections per second`);
+        clusterDpsToReport = clusterDps.toFixed(2);
+    }
+
+    return {
+        clusterDps: clusterDpsToReport,
+        detectorsStats
+    }
+};
