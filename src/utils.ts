@@ -13,7 +13,7 @@ export enum TaskType {
     ReportHaConsumables = 'ReportHaConsumables',
     TomorrowEventsHa = 'TomorrowEventsHa',
     RestartScrypted = 'RestartScrypted',
-    JsScript = 'JsScript',
+    CamerasRecordingSchedule = 'CamerasRecordingSchedule',
 }
 
 export interface PluginUpdateCheck {

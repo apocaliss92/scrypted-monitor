@@ -2,12 +2,12 @@ import sdk, { Notifier, Reboot, ScryptedDeviceBase, ScryptedDeviceType, Scrypted
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
 import cron, { ScheduledTask } from 'node-cron';
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
-import { getAllPlugins, getPluginStats, getTaskChecksum, getTaskKeys, pluginHasUpdate, restartScrypted, restartPlugin, runValidate, Task, TaskType, updatePlugin, getStorageInfo, runBenchmark } from "./utils";
+import { getAllPlugins, getPluginStats, getTaskChecksum, getTaskKeys, pluginHasUpdate, restartScrypted, restartPlugin, runValidate, Task, TaskType, updatePlugin, getStorageInfo } from "./utils";
 import moment from "moment";
 import DiagnosticsPlugin from '../../scrypted/plugins/diagnostics/src/main';
 import { scrypted } from '../package.json'
 
-const divider = '-------------\n';
+const divider = '-------------';
 
 export default class RemoteBackup extends BasePlugin {
     private cronTasks: ScheduledTask[] = [];
@@ -271,47 +271,55 @@ export default class RemoteBackup extends BasePlugin {
             const stats = await getPluginStats(maxStats);
             logger.log(`Current stats: ${JSON.stringify(stats)}`);
 
-            if (stats.currentObjectDetections) {
-                message += `[Active object detection sessions]: ${stats.currentObjectDetections.length}\n`;
-                message += `[Active motion detection sessions]: ${stats.currentMotionDetections.length}\n`;
-                // message += `[Active object detection sessions]\n${divider}`;
-                // stats.currentObjectDetections.forEach(item => message += `${item}\n`);
-                // message += divider;
+            if (stats.benchmark) {
+                message += `[Benchmark]\n`;
+                stats.benchmark.detectorsStats.forEach(item => message += `${item.detections} detections in ${item.time} seconds (${item.detectionRate} dps)\n`);
+                if (stats.benchmark.clusterDps != null) {
+                    message += `Cluster detections per second: ${stats.benchmark.clusterDps}\n`;
+                }
+                message += `${divider}\n`;
             }
 
-            if (stats.currentActiveStreams != null) {
-                message += `[Active stream sessions]: ${stats.currentActiveStreams}\n`;
-                message += divider;
+            if (stats.currentObjectDetections || stats.currentActiveStreams != null) {
+                message += `[General]\n`;
+
+                if (stats.currentObjectDetections) {
+                    message += `Active object detection sessions: ${stats.currentObjectDetections.length}\n`;
+                    message += `Active motion detection sessions: ${stats.currentMotionDetections.length}\n`;
+                }
+
+                if (stats.currentActiveStreams != null) {
+                    message += `Active stream sessions: ${stats.currentActiveStreams}${divider}\n`;
+                }
+                message += `${divider}\n`;
             }
+
 
             if (stats.rpcObjects) {
-                message += `[RPC Objects]\n${divider}`;
+                message += `[RPC Objects]\n`;
                 stats.rpcObjects.forEach(item => message += `${item.name}: ${item.count}\n`);
+                message += `${divider}\n`;
             }
 
             if (stats.pendingResults) {
-                message += `${divider}[Pending Results]\n${divider}`;
+                message += `[Pending Results]\n`;
                 stats.pendingResults.forEach(item => message += `${item.name}: ${item.count}\n`);
+                message += `${divider}\n`;
             }
 
             if (stats.connections.length) {
-                message += `${divider}[Connections]\n${divider}`;
+                message += `[Connections]\n`;
                 stats.connections.forEach(item => message += `${item.name}: ${item.count}\n`);
+                message += `${divider}\n`;
             }
 
             if (stats.cluster) {
-                message += `${divider}[Workers]\n${divider}`;
+                message += `[Workers]\n`;
                 stats.cluster.workers.forEach(item => message += `${item.name}: ${item.count}\n`);
-                message += `${divider}[Devices]\n${divider}`;
-                stats.cluster.devices.forEach(item => message += `${item.name}: ${item.count}\n`);
-            }
+                message += `${divider}\n`;
 
-            if (stats.benchmark) {
-                message += `${divider}[Benchmark]\n${divider}`;
-                stats.benchmark.detectorsStats.forEach(item => message += `${item.detections} detections in ${item.time} seconds (${item.detectionRate} dps)\n`);
-                if (stats.benchmark.clusterDps != null) {
-                    message += `Cluster detections per second: ${stats.benchmark.clusterDps}`;
-                }
+                message += `[Devices]\n`;
+                stats.cluster.devices.forEach(item => message += `${item.name}: ${item.count}\n`);
             }
         } else if (type === TaskType.RestartCameras) {
             logger.log(`Restarting cameras: ${JSON.stringify(devices)}`);
