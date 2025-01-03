@@ -13,7 +13,8 @@ export enum TaskType {
     ReportHaConsumables = 'ReportHaConsumables',
     TomorrowEventsHa = 'TomorrowEventsHa',
     RestartScrypted = 'RestartScrypted',
-    CamerasRecordingSchedule = 'CamerasRecordingSchedule',
+    ReportZ2mOfflineEntities = 'ReportZ2mOfflineEntities',
+    // CamerasRecordingSchedule = 'CamerasRecordingSchedule',
 }
 
 export interface PluginUpdateCheck {
@@ -60,6 +61,8 @@ export interface Task {
     devices?: string[];
     additionalNotifiers?: string[];
     batteryThreshold?: number;
+    calendarDaysInFuture?: number;
+    unavailableTime?: number;
     entitiesToAlwaysReport?: string[];
     entitiesToExclude?: string[];
     calendarEntity?: string;
@@ -349,10 +352,12 @@ export const getTaskKeys = (taskName: string) => {
     const taskSkipNotify = `task:${taskName}:skipNotify`;
     const taskCheckAllPluginsVersion = `task:${taskName}:checkAllPlugins`;
     const taskBatteryThreshold = `task:${taskName}:batteryThreshold`;
+    const taskCalendarDaysInFuture = `task:${taskName}:calendarDaysInFuture`;
     const taskEntitiesToAlwaysReport = `task:${taskName}:entitiesToAlwaysReport`;
     const taskEntitiesToExclude = `task:${taskName}:entitiesToExclude`;
     const taskAdditionalNotifiers = `task:${taskName}:additionalNotifiers`;
     const taskCalendarEntity = `task:${taskName}:calendarEntity`;
+    const tasksUnavailableTime = `task:${taskName}:tasksUnavailableTime`;
 
     return {
         taskTypeKey,
@@ -371,6 +376,8 @@ export const getTaskKeys = (taskName: string) => {
         taskEntitiesToExclude,
         taskAdditionalNotifiers,
         taskCalendarEntity,
+        tasksUnavailableTime,
+        taskCalendarDaysInFuture,
     }
 }
 

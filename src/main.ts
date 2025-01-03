@@ -33,6 +33,12 @@ export default class RemoteBackup extends BasePlugin {
             type: 'device',
             deviceFilter: `(type === '${ScryptedDeviceType.Notifier}')`,
         },
+        datesLocale: {
+            title: 'Dates locale',
+            type: 'string',
+            placeholder: 'en-US',
+            defaultValue: 'en-US',
+        },
         taskManualExecution: {
             title: 'Task to run',
             group: 'Manual execute',
@@ -115,7 +121,9 @@ export default class RemoteBackup extends BasePlugin {
             taskEntitiesToAlwaysReport,
             taskEntitiesToExclude,
             taskAdditionalNotifiers,
-            taskCalendarEntity
+            taskCalendarEntity,
+            tasksUnavailableTime,
+            taskCalendarDaysInFuture
         } = getTaskKeys(taskName);
 
         return {
@@ -135,6 +143,8 @@ export default class RemoteBackup extends BasePlugin {
             entitiesToAlwaysReport: JSON.parse(this.storage.getItem(taskEntitiesToAlwaysReport as any) as string ?? '[]'),
             entitiesToExclude: JSON.parse(this.storage.getItem(taskEntitiesToExclude as any) as string ?? '[]'),
             batteryThreshold: JSON.parse(this.storage.getItem(taskBatteryThreshold) ?? '30'),
+            unavailableTime: JSON.parse(this.storage.getItem(tasksUnavailableTime) ?? '24'),
+            calendarDaysInFuture: JSON.parse(this.storage.getItem(taskCalendarDaysInFuture) ?? '14'),
             calendarEntity: this.storage.getItem(taskCalendarEntity as any) as string,
         };
     }
@@ -171,7 +181,10 @@ export default class RemoteBackup extends BasePlugin {
             entitiesToExclude,
             additionalNotifiers,
             calendarEntity,
+            unavailableTime,
+            calendarDaysInFuture,
         } = task;
+        const { datesLocale } = this.storageSettings.values;
 
         let message = ``;
         const title = `${name}`;
@@ -289,7 +302,7 @@ export default class RemoteBackup extends BasePlugin {
                 }
 
                 if (stats.currentActiveStreams != null) {
-                    message += `Active stream sessions: ${stats.currentActiveStreams}${divider}\n`;
+                    message += `Active stream sessions: ${stats.currentActiveStreams}\n`;
                 }
                 message += `${divider}\n`;
             }
@@ -370,6 +383,29 @@ export default class RemoteBackup extends BasePlugin {
             if (!atLeast1LowBattery && !trackedEntries.length) {
                 message += `All batteries ok\n`;
             }
+        } else if (type === TaskType.ReportZ2mOfflineEntities) {
+            logger.log(`Reporting HA unavailable sensors`);
+            const haApi = await this.getHaApi();
+            const statuses = await haApi.getStatesDate();
+            let atLeast1Unavailable = false;
+
+            statuses.data.forEach(entity => {
+                const lastSeen = entity.attributes.last_seen;
+
+                if (
+                    lastSeen &&
+                    !entitiesToExclude.includes(entity.entity_id) &&
+                    moment(lastSeen).isSameOrBefore(moment().subtract(unavailableTime, 'hours'))) {
+                    const timeString = moment(lastSeen).locale(datesLocale).fromNow()
+                    const messageToAdd = `${entity?.attributes?.friendly_name}: ${timeString}`;
+                    message += `${messageToAdd}\n`;
+                    atLeast1Unavailable = true;
+                }
+            });
+
+            if (!atLeast1Unavailable) {
+                forceStop = true;
+            }
         } else if (type === TaskType.ReportHaConsumables) {
             logger.log(`Reporting HA consumables`);
             const haApi = await this.getHaApi();
@@ -389,7 +425,7 @@ export default class RemoteBackup extends BasePlugin {
             const haApi = await this.getHaApi();
             const fromDate = moment().add(1, 'days').startOf('day').toISOString().replace('T', ' ').split('.')[0];
             const endDate = moment().add(1, 'days').endOf('day').toISOString().replace('T', ' ').split('.')[0];
-            const endDateWeek = moment().add(14, 'days').endOf('day').toISOString().replace('T', ' ').split('.')[0];
+            const endDateWeek = moment().add(calendarDaysInFuture, 'days').endOf('day').toISOString().replace('T', ' ').split('.')[0];
             const eventsResponse = await haApi.getCalendarEvents(
                 calendarEntity,
                 fromDate,
@@ -416,7 +452,7 @@ export default class RemoteBackup extends BasePlugin {
                 }
 
                 for (const event of eventsNext2Weeks) {
-                    message += `${event.summary} - ${moment(event.start, 'YYYY-MM-DD').locale('it').fromNow()}\n`;
+                    message += `${event.summary} - ${moment(event.start, 'YYYY-MM-DD').locale(datesLocale).fromNow()}\n`;
                 }
             }
 
@@ -530,7 +566,9 @@ export default class RemoteBackup extends BasePlugin {
                 entitiesToAlwaysReport,
                 entitiesToExclude,
                 additionalNotifiers,
-                calendarEntity
+                calendarEntity,
+                unavailableTime,
+                calendarDaysInFuture
             } = this.getTask(task);
             const {
                 taskCronKey,
@@ -548,9 +586,31 @@ export default class RemoteBackup extends BasePlugin {
                 taskEntitiesToAlwaysReport,
                 taskEntitiesToExclude,
                 taskAdditionalNotifiers,
-                taskCalendarEntity
+                taskCalendarEntity,
+                tasksUnavailableTime,
+                taskCalendarDaysInFuture
             } = getTaskKeys(task);
             const group = `Task: ${task}`;
+
+            const exludedEntitiesSetting: Setting = {
+                key: taskEntitiesToExclude,
+                title: 'Entities to exclude',
+                group,
+                type: 'string',
+                value: entitiesToExclude,
+                multiple: true,
+                combobox: true,
+            };
+            const entitiesToAlwaysReportSetting: Setting = {
+                key: taskEntitiesToAlwaysReport,
+                title: 'Entities to always report',
+                group,
+                type: 'string',
+                value: entitiesToAlwaysReport,
+                multiple: true,
+                combobox: true,
+            }
+
             settings.push(
                 {
                     key: taskEnabledKey,
@@ -714,24 +774,21 @@ export default class RemoteBackup extends BasePlugin {
                         type: 'number',
                         value: batteryThreshold,
                     },
+                    entitiesToAlwaysReportSetting,
+                    exludedEntitiesSetting
+                );
+            }
+
+            if (type === TaskType.ReportZ2mOfflineEntities) {
+                settings.push(
                     {
-                        key: taskEntitiesToAlwaysReport,
-                        title: 'Entities to always report',
+                        key: tasksUnavailableTime,
+                        title: 'Hours to consider an entity offline',
                         group,
-                        type: 'string',
-                        value: entitiesToAlwaysReport,
-                        multiple: true,
-                        combobox: true,
+                        type: 'number',
+                        value: unavailableTime,
                     },
-                    {
-                        key: taskEntitiesToExclude,
-                        title: 'Entities to exclude',
-                        group,
-                        type: 'string',
-                        value: entitiesToExclude,
-                        multiple: true,
-                        combobox: true,
-                    }
+                    exludedEntitiesSetting
                 );
             }
 
@@ -744,15 +801,7 @@ export default class RemoteBackup extends BasePlugin {
                         type: 'number',
                         value: batteryThreshold,
                     },
-                    {
-                        key: taskEntitiesToAlwaysReport,
-                        title: 'Entities to report',
-                        group,
-                        type: 'string',
-                        value: entitiesToAlwaysReport,
-                        multiple: true,
-                        combobox: true,
-                    },
+                    entitiesToAlwaysReportSetting,
                 );
             }
 
@@ -764,7 +813,14 @@ export default class RemoteBackup extends BasePlugin {
                         group,
                         type: 'string',
                         value: calendarEntity,
-                    }
+                    },
+                    {
+                        key: taskCalendarDaysInFuture,
+                        title: 'Days in future to report ',
+                        group,
+                        type: 'number',
+                        value: calendarDaysInFuture,
+                    },
                 );
             }
         });

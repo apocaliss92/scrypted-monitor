@@ -13,6 +13,7 @@ Scrypted plugin that can run the following actions on a scheduled base:
 - Report HA batteries status (fetches from HA the battery entities and reports the critical ones)
 - Report HA consumables (fetches and reports from HA the %/days statuses)
 - Tomorrow events HA (fetches from HA the tomorrow's calendar events)
+- Zigbee2MQTT offline devices (requires last_seen to be enabled)
 
 The result of the runs can be sent on a notifier
 
