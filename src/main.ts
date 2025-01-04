@@ -383,21 +383,30 @@ export default class RemoteBackup extends BasePlugin {
             if (!atLeast1LowBattery && !trackedEntries.length) {
                 message += `All batteries ok\n`;
             }
-        } else if (type === TaskType.ReportZ2mOfflineEntities) {
+        } else if (type === TaskType.ReportHaUnavailableEntities) {
             logger.log(`Reporting HA unavailable sensors`);
             const haApi = await this.getHaApi();
             const statuses = await haApi.getStatesDate();
             let atLeast1Unavailable = false;
 
             statuses.data.forEach(entity => {
-                const lastSeen = entity.attributes.last_seen;
-
                 if (
-                    lastSeen &&
-                    !entitiesToExclude.includes(entity.entity_id) &&
-                    moment(lastSeen).isSameOrBefore(moment().subtract(unavailableTime, 'hours'))) {
-                    const timeString = moment(lastSeen).locale(datesLocale).fromNow()
-                    const messageToAdd = `${entity?.attributes?.friendly_name}: ${timeString}`;
+                    entity.state === 'unavailable' &&
+                    (entitiesToAlwaysReport?.length ?
+                        entitiesToAlwaysReport.some(regex => new RegExp(regex).test(entity.entity_id)) :
+                        true
+                    ) && 
+                    (entitiesToExclude?.length ?
+                        entitiesToExclude.every(regex => !(new RegExp(regex).test(entity.entity_id))) :
+                        true
+                    )
+                ) {
+                    const lastUpdate = entity.attributes.last_seen ?? entity.last_reported;
+                    let messageToAdd = `${entity?.attributes?.friendly_name}`;
+                    if (lastUpdate) {
+                        const timeString = moment(lastUpdate).locale(datesLocale).fromNow();
+                        messageToAdd += `: ${timeString}`;
+                    }
                     message += `${messageToAdd}\n`;
                     atLeast1Unavailable = true;
                 }
@@ -779,16 +788,23 @@ export default class RemoteBackup extends BasePlugin {
                 );
             }
 
-            if (type === TaskType.ReportZ2mOfflineEntities) {
+            if (type === TaskType.ReportHaUnavailableEntities) {
                 settings.push(
                     {
-                        key: tasksUnavailableTime,
-                        title: 'Hours to consider an entity offline',
-                        group,
-                        type: 'number',
-                        value: unavailableTime,
+                        ...entitiesToAlwaysReportSetting,
+                        title: 'Entities regexes to match',
                     },
-                    exludedEntitiesSetting
+                    // {
+                    //     key: tasksUnavailableTime,
+                    //     title: 'Hours to consider an entity offline',
+                    //     group,
+                    //     type: 'number',
+                    //     value: unavailableTime,
+                    // },
+                    {
+                        ...exludedEntitiesSetting,
+                        title: 'Entities regexes to exclude',
+                    },
                 );
             }
 

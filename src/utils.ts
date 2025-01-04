@@ -13,7 +13,7 @@ export enum TaskType {
     ReportHaConsumables = 'ReportHaConsumables',
     TomorrowEventsHa = 'TomorrowEventsHa',
     RestartScrypted = 'RestartScrypted',
-    ReportZ2mOfflineEntities = 'ReportZ2mOfflineEntities',
+    ReportHaUnavailableEntities = 'ReportHaUnavailableEntities',
     // CamerasRecordingSchedule = 'CamerasRecordingSchedule',
 }
 
