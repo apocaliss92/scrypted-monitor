@@ -282,11 +282,12 @@ export default class RemoteBackup extends BasePlugin {
             }
         } else if (type === TaskType.ReportPluginsStatus) {
             const stats = await getPluginStats(maxStats);
+
             logger.log(`Current stats: ${JSON.stringify(stats)}`);
 
             if (stats.benchmark) {
                 message += `[Benchmark]\n`;
-                stats.benchmark.detectorsStats.forEach(item => message += `${item.detections} detections in ${item.time} seconds (${item.detectionRate} dps)\n`);
+                stats.benchmark.detectorsStats.forEach(item => message += `${item.name}: ${item.detections} detections in ${item.time} seconds (${item.detectionRate} dps)\n`);
                 if (stats.benchmark.clusterDps != null) {
                     message += `Cluster detections per second: ${stats.benchmark.clusterDps}\n`;
                 }
@@ -304,6 +305,10 @@ export default class RemoteBackup extends BasePlugin {
                 if (stats.currentActiveStreams != null) {
                     message += `Active stream sessions: ${stats.currentActiveStreams}\n`;
                 }
+
+                message += `Storage usage: ${stats.freeSpace}\n`;
+                message += `Recording cameras: ${stats.recordingCameras}\n`;
+
                 message += `${divider}\n`;
             }
 
@@ -351,10 +356,15 @@ export default class RemoteBackup extends BasePlugin {
             statuses.data.forEach(entity => {
                 if (!entitiesToExclude.includes(entity.entity_id) && entity.attributes.device_class === 'battery') {
                     if (entity.entity_id.startsWith('sensor.')) {
+                        const batteryPerc = Number(entity.state ?? -1);
+                        if (batteryPerc < 10) {
+                            priority = 1;
+                        }
+
                         const messageToAdd = `${entity?.attributes?.friendly_name} (${entity.state}%)`;
                         if (entitiesToAlwaysReport.includes(entity.entity_id)) {
                             trackedEntries.push(messageToAdd);
-                        } else if (Number(entity.state ?? -1) < batteryThreshold) {
+                        } else if (batteryPerc < batteryThreshold) {
                             message += `${messageToAdd}\n`;
                             atLeast1LowBattery = true;
                         }
@@ -363,6 +373,7 @@ export default class RemoteBackup extends BasePlugin {
                         if (entitiesToAlwaysReport.includes(entity.entity_id)) {
                             trackedEntries.push(messageToAdd);
                         } else if (entity.state === 'on') {
+                            priority = 1;
                             message += `${messageToAdd}\n`;
                             atLeast1LowBattery = true;
                         }
@@ -395,7 +406,7 @@ export default class RemoteBackup extends BasePlugin {
                     (entitiesToAlwaysReport?.length ?
                         entitiesToAlwaysReport.some(regex => new RegExp(regex).test(entity.entity_id)) :
                         true
-                    ) && 
+                    ) &&
                     (entitiesToExclude?.length ?
                         entitiesToExclude.every(regex => !(new RegExp(regex).test(entity.entity_id))) :
                         true
@@ -424,7 +435,13 @@ export default class RemoteBackup extends BasePlugin {
                 if (entitiesToAlwaysReport.includes(entity.entity_id)) {
                     if (entity.attributes.unit_of_measurement === '%') {
                         message += `${entity.attributes.friendly_name}: ${entity.state} %\n`
+                        if (Number(entity.state) < 10) {
+                            priority = 1;
+                        }
                     } else if (entity.attributes.unit_of_measurement === 'd') {
+                        if (Number(entity.state) <= 3) {
+                            priority = 1;
+                        }
                         message += `${entity.attributes.friendly_name}: ${entity.state} days\n`
                     }
                 }
@@ -449,23 +466,24 @@ export default class RemoteBackup extends BasePlugin {
             logger.log(`Events found: ${events}`);
 
             for (const event of events) {
+                priority = 1;
                 message += `${event.summary}\n`;
             }
 
-            const eventsNext2Weeks = eventsResponseWeek.data.service_response[calendarEntity]?.events;
-            logger.log(`Next 2 weeks events found ${eventsNext2Weeks}`)
+            const eventsFuture = eventsResponseWeek.data.service_response[calendarEntity]?.events;
+            logger.log(`Events found in the next ${calendarDaysInFuture} days: ${eventsFuture}`)
 
-            if (eventsNext2Weeks.length) {
+            if (eventsFuture.length) {
                 if (events.length) {
                     message += divider;
                 }
 
-                for (const event of eventsNext2Weeks) {
+                for (const event of eventsFuture) {
                     message += `${event.summary} - ${moment(event.start, 'YYYY-MM-DD').locale(datesLocale).fromNow()}\n`;
                 }
             }
 
-            if (!events.length && !eventsNext2Weeks.length) {
+            if (!events.length && !eventsFuture.length) {
                 forceStop = true;
             }
 
@@ -480,12 +498,6 @@ export default class RemoteBackup extends BasePlugin {
             actionsToDefer = async () => {
                 await restartScrypted();
             }
-        } else if (type === TaskType.ReportStorageStatus) {
-            logger.log(`Reporting storage status`);
-
-            const { freeSpace, recordingCameras } = await getStorageInfo();
-            message += `Storage usage: ${freeSpace}\n`;
-            message += `Recording cameras: ${recordingCameras}\n`;
         }
 
         if (!skipNotify && !forceStop) {

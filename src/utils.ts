@@ -8,7 +8,6 @@ export enum TaskType {
     Diagnostics = 'Diagnostics',
     RestartCameras = 'RestartCameras',
     ReportPluginsStatus = 'ReportPluginsStatus',
-    ReportStorageStatus = 'ReportStorageStatus',
     ReportHaBatteryStatus = 'ReportHaBatteryStatus',
     ReportHaConsumables = 'ReportHaConsumables',
     TomorrowEventsHa = 'TomorrowEventsHa',
@@ -132,8 +131,8 @@ export const getStorageInfo = async () => {
     const spaceFreePercentage = (Number(freeSpaceSetting.value) * 100 / Number(freeSpaceSetting.range[1])).toFixed(1);
 
     const freeSpace = `${freeSpaceSetting.value}/${freeSpaceSetting.range[1]} ${freeSpaceSetting.placeholder} (${spaceFreePercentage}%)`;
-    const recordingCameras = cameraStatsSetting.value;
-    const availableLicenses = licenseCountSetting.value;
+    const recordingCameras = cameraStatsSetting.value as string;
+    const availableLicenses = licenseCountSetting.value as string;
 
     return { freeSpace, recordingCameras, availableLicenses };
 }
@@ -157,6 +156,8 @@ interface PluginStats {
         devices: { name: string, count: number }[],
     }
     benchmark: Benchmark;
+    freeSpace: string;
+    recordingCameras: string;
 }
 
 export interface ForkOptions {
@@ -215,7 +216,9 @@ export const getPluginStats = async (maxStats = 5) => {
         benchmark: {
             detectorsStats: [],
             clusterDps: undefined
-        }
+        },
+        freeSpace: '-',
+        recordingCameras: '-'
     }
 
     const videoAnalytisPlugin = sdk.systemManager.getDeviceByName('Video Analysis Plugin') as unknown as Settings;
@@ -283,6 +286,9 @@ export const getPluginStats = async (maxStats = 5) => {
     }
 
     stats.benchmark = await runBenchmark();
+    const { freeSpace, recordingCameras } = await getStorageInfo();
+    stats.recordingCameras = recordingCameras;
+    stats.freeSpace = freeSpace;
 
     return stats;
 }
@@ -453,6 +459,7 @@ export const restartScrypted = async () => {
 }
 
 interface DetectorStats {
+    name: string;
     time: string;
     detections: number;
     detectionRate: string;
@@ -603,6 +610,7 @@ export const runBenchmark = async (): Promise<Benchmark> => {
                 totalDetectors++;
 
                 detectorsStats.push({
+                    name: id,
                     time: (ms / 1000).toFixed(2),
                     detections,
                     detectionRate
