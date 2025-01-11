@@ -68,6 +68,8 @@ export default class RemoteBackup extends BasePlugin {
             pluginFriendlyName: 'Monitor'
         });
         this.diagnosticsPlugin = new DiagnosticsPlugin();
+        this.diagnosticsPlugin.lastMotionMaxHours = 16;
+        this.diagnosticsPlugin.lastPressMaxHours = 16;
 
         this.start(true).then().catch(console.log);
     }
@@ -349,7 +351,7 @@ export default class RemoteBackup extends BasePlugin {
         } else if (type === TaskType.ReportHaBatteryStatus) {
             logger.log(`Reporting HA battery statuses`);
             const haApi = await this.getHaApi();
-            const statuses = await haApi.getStatesDate();
+            const statuses = await haApi.getStatesData();
             let atLeast1LowBattery = false;
             const trackedEntries: string[] = [];
 
@@ -397,7 +399,7 @@ export default class RemoteBackup extends BasePlugin {
         } else if (type === TaskType.ReportHaUnavailableEntities) {
             logger.log(`Reporting HA unavailable sensors`);
             const haApi = await this.getHaApi();
-            const statuses = await haApi.getStatesDate();
+            const statuses = await haApi.getStatesData();
             let atLeast1Unavailable = false;
 
             statuses.data.forEach(entity => {
@@ -429,23 +431,35 @@ export default class RemoteBackup extends BasePlugin {
         } else if (type === TaskType.ReportHaConsumables) {
             logger.log(`Reporting HA consumables`);
             const haApi = await this.getHaApi();
-            const statuses = await haApi.getStatesDate();
+            const statuses = await haApi.getStatesData();
+            let atLeast1Problem = false;
 
             statuses.data.forEach(entity => {
                 if (entitiesToAlwaysReport.includes(entity.entity_id)) {
                     if (entity.attributes.unit_of_measurement === '%') {
-                        message += `${entity.attributes.friendly_name}: ${entity.state} %\n`
                         if (Number(entity.state) < 10) {
-                            priority = 1;
+                            message += `${entity.attributes.friendly_name}: ${entity.state} %\n`;
+                            atLeast1Problem = true;
                         }
                     } else if (entity.attributes.unit_of_measurement === 'd') {
                         if (Number(entity.state) <= 3) {
-                            priority = 1;
+                            message += `${entity.attributes.friendly_name}: ${entity.state} days\n`;
+                            atLeast1Problem = true;
                         }
-                        message += `${entity.attributes.friendly_name}: ${entity.state} days\n`
+                    } else if (entity.attributes.device_class === 'problem') {
+                        if (entity.state === 'on') {
+                            message += `${entity.attributes.friendly_name}\n`;
+                            atLeast1Problem = true;
+                        }
                     }
                 }
             });
+
+            if (!atLeast1Problem) {
+                forceStop = true;
+            } else {
+                priority = 1;
+            }
         } else if (type === TaskType.TomorrowEventsHa) {
             logger.log(`Reporting tomorrow HA calendar events`);
             const haApi = await this.getHaApi();
@@ -467,7 +481,7 @@ export default class RemoteBackup extends BasePlugin {
 
             for (const event of events) {
                 priority = 1;
-                message += `${event.summary}\n`;
+                message += `${event.summary} - ${moment(event.start, 'YYYY-MM-DD').locale(datesLocale).fromNow()}\n`;
             }
 
             const eventsFuture = eventsResponseWeek.data.service_response[calendarEntity]?.events;
@@ -475,7 +489,7 @@ export default class RemoteBackup extends BasePlugin {
 
             if (eventsFuture.length) {
                 if (events.length) {
-                    message += divider;
+                    message += `${divider}\n`;
                 }
 
                 for (const event of eventsFuture) {
