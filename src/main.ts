@@ -385,7 +385,7 @@ export default class RemoteBackup extends BasePlugin {
 
             if (trackedEntries.length) {
                 if (atLeast1LowBattery) {
-                    message += divider;
+                    message += `${divider}\n`;
                 }
 
                 for (const trackedEntry of trackedEntries) {
