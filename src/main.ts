@@ -417,7 +417,7 @@ export default class RemoteBackup extends BasePlugin {
                     const lastUpdate = entity.attributes.last_seen ?? entity.last_reported;
                     let messageToAdd = `${entity?.attributes?.friendly_name}`;
                     if (lastUpdate) {
-                        const timeString = moment(lastUpdate).locale(datesLocale).fromNow();
+                        const timeString = moment(lastUpdate).locale(datesLocale).calendar();
                         messageToAdd += `: ${timeString}`;
                     }
                     message += `${messageToAdd}\n`;
@@ -465,26 +465,31 @@ export default class RemoteBackup extends BasePlugin {
             const haApi = await this.getHaApi();
             const fromDate = moment().add(1, 'days').startOf('day').toISOString().replace('T', ' ').split('.')[0];
             const endDate = moment().add(1, 'days').endOf('day').toISOString().replace('T', ' ').split('.')[0];
-            const endDateWeek = moment().add(calendarDaysInFuture, 'days').endOf('day').toISOString().replace('T', ' ').split('.')[0];
+            const endDateFuture = moment().add(calendarDaysInFuture, 'days').endOf('day').toISOString().replace('T', ' ').split('.')[0];
             const eventsResponse = await haApi.getCalendarEvents(
                 calendarEntity,
                 fromDate,
                 endDate,
             );
-            const eventsResponseWeek = await haApi.getCalendarEvents(
+            const eventsResponseFuture = await haApi.getCalendarEvents(
                 calendarEntity,
                 endDate,
-                endDateWeek,
+                endDateFuture,
             );
             const events = eventsResponse.data.service_response[calendarEntity]?.events;
             logger.log(`Events found: ${events}`);
 
             for (const event of events) {
                 priority = 1;
-                message += `${event.summary} - ${moment(event.start, 'YYYY-MM-DD').locale(datesLocale).fromNow()}\n`;
+                const startDate = new Date(event.start);
+                if (event.start.length === 10) {
+                    message += `${event.summary} - ${moment(startDate).locale(datesLocale).fromNow()}\n`;
+                } else {
+                    message += `${event.summary} - ${moment(startDate).locale(datesLocale).calendar()}\n`;
+                }
             }
 
-            const eventsFuture = eventsResponseWeek.data.service_response[calendarEntity]?.events;
+            const eventsFuture = eventsResponseFuture.data.service_response[calendarEntity]?.events;
             logger.log(`Events found in the next ${calendarDaysInFuture} days: ${eventsFuture}`)
 
             if (eventsFuture.length) {
@@ -493,7 +498,12 @@ export default class RemoteBackup extends BasePlugin {
                 }
 
                 for (const event of eventsFuture) {
-                    message += `${event.summary} - ${moment(event.start, 'YYYY-MM-DD').locale(datesLocale).fromNow()}\n`;
+                    const startDate = new Date(event.start);
+                    if (event.start.length === 10) {
+                        message += `${event.summary} - ${moment(startDate).locale(datesLocale).fromNow()}\n`;
+                    } else {
+                        message += `${event.summary} - ${moment(startDate).locale(datesLocale).calendar()}\n`;
+                    }
                 }
             }
 
