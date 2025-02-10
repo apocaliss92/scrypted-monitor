@@ -246,29 +246,36 @@ export default class RemoteBackup extends BasePlugin {
                 message += `\n`;
             }
 
-            for (const pluginId of plugins) {
+            const allPlugins = getAllPlugins().map(pluginName => {
+                return sdk.systemManager.getDeviceByName(pluginName);
+            });
+
+            const isAllPlugins = !plugins?.length;
+            const pluginsToUpdate = isAllPlugins ? allPlugins.map(plugin => plugin.id) : plugins;
+            let somePluginUpdated = false;
+            for (const pluginId of pluginsToUpdate) {
                 const plugin = sdk.systemManager.getDeviceById(pluginId);
                 const { manufacturer, version } = plugin.info;
 
                 logger.log(`Updating plugin ${manufacturer}`);
                 const { newVersion, isBeta, versions } = await updatePlugin(logger, manufacturer, version, beta);
+
                 if (newVersion) {
                     message += `[${manufacturer}]: Updated ${version} -> ${newVersion}`;
                     finalizeVersion(isBeta);
-                } else {
+                    somePluginUpdated = true;
+                } else if (!isAllPlugins) {
                     const versionEntry = versions.find(item => item.version === version);
                     message += `[${manufacturer}]: Already on latest version ${version}`;
                     finalizeVersion(versionEntry?.tag === 'beta');
                 }
             }
 
-            if (checkAllPlugins) {
-                const otherPlugins = getAllPlugins().map(pluginName => {
-                    return sdk.systemManager.getDeviceByName(pluginName);
-                }).filter(plugin => !plugins.includes(plugin.id));
+            let somePluginOutdated = false;
+            if (checkAllPlugins && !isAllPlugins) {
+                const otherPlugins = allPlugins.filter(plugin => !plugins.includes(plugin.id));
                 logger.log(`Checking other plugins: ${otherPlugins.map(plugin => plugin.name)}`);
 
-                let somePluginOutdated = false;
                 for (const plugin of otherPlugins) {
                     const { manufacturer, version } = plugin.info;
                     const { newVersion, isBeta } = await pluginHasUpdate(logger, manufacturer, version, beta);
@@ -278,9 +285,14 @@ export default class RemoteBackup extends BasePlugin {
                         finalizeVersion(isBeta);
                     }
                 }
+
                 if (!somePluginOutdated) {
                     message += `\nAll the other plugins are on the latest version\n`;
                 }
+            }
+
+            if (!somePluginUpdated && !somePluginOutdated) {
+                forceStop = true;
             }
         } else if (type === TaskType.ReportPluginsStatus) {
             const stats = await getPluginStats(maxStats);
@@ -724,6 +736,7 @@ export default class RemoteBackup extends BasePlugin {
                     {
                         key: taskPluginsKey,
                         title: 'Plugins',
+                        description: 'Leave empty to update all the plugins',
                         group,
                         type: 'device',
                         value: plugins,
