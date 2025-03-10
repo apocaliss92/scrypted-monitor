@@ -258,16 +258,20 @@ export default class RemoteBackup extends BasePlugin {
                 const { manufacturer, version } = plugin.info;
 
                 logger.log(`Updating plugin ${manufacturer}`);
-                const { newVersion, isBeta, versions } = await updatePlugin(logger, manufacturer, version, beta);
+                const updateResult = await updatePlugin(logger, manufacturer, version, beta);
 
-                if (newVersion) {
-                    message += `[${manufacturer}]: Updated ${version} -> ${newVersion}`;
-                    finalizeVersion(isBeta);
-                    somePluginUpdated = true;
-                } else if (!isAllPlugins) {
-                    const versionEntry = versions.find(item => item.version === version);
-                    message += `[${manufacturer}]: Already on latest version ${version}`;
-                    finalizeVersion(versionEntry?.tag === 'beta');
+                if (updateResult) {
+                    const { newVersion, isBeta } = updateResult;
+                    if (newVersion) {
+                        message += `[${manufacturer}]: Updated ${version} -> ${newVersion}`;
+                        finalizeVersion(isBeta);
+                        somePluginUpdated = true;
+                    }
+                    //  else if (!isAllPlugins) {
+                    //     const versionEntry = versions.find(item => item.version === version);
+                    //     message += `[${manufacturer}]: Already on latest version ${version}`;
+                    //     finalizeVersion(versionEntry?.tag === 'beta');
+                    // }
                 }
             }
 
@@ -286,9 +290,9 @@ export default class RemoteBackup extends BasePlugin {
                     }
                 }
 
-                if (!somePluginOutdated) {
-                    message += `\nAll the other plugins are on the latest version\n`;
-                }
+                // if (!somePluginOutdated) {
+                //     message += `\nAll the other plugins are on the latest version\n`;
+                // }
             }
 
             if (!somePluginUpdated && !somePluginOutdated) {
@@ -657,6 +661,7 @@ export default class RemoteBackup extends BasePlugin {
                 value: entitiesToExclude,
                 multiple: true,
                 combobox: true,
+                choices: [],
             };
             const entitiesToAlwaysReportSetting: Setting = {
                 key: taskEntitiesToAlwaysReport,
@@ -666,6 +671,7 @@ export default class RemoteBackup extends BasePlugin {
                 value: entitiesToAlwaysReport,
                 multiple: true,
                 combobox: true,
+                choices: [],
             }
 
             settings.push(
