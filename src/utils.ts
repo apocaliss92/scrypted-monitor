@@ -504,7 +504,7 @@ const runDetector = async (props: {
     let completedDetections = 0;
     const { d, image, batch, batchesPerCamera, simulatedCameras, logProgress } = props;
     const model = await d.getDetectionModel();
-    console.log('Model', model);
+    logProgress && console.log('Model', model);
     const bytes = Buffer.alloc(model.inputSize[0] * model.inputSize[1] * 3);
     const media = await sdk.mediaManager.createMediaObject(bytes, 'x-scrypted/x-scrypted-image', {
         sourceId: image.sourceId,
@@ -520,7 +520,7 @@ const runDetector = async (props: {
     let detections = 0;
     const totalDetections = simulatedCameras * batchesPerCamera * batch;
 
-    console.log("Starting benchmark...");
+    logProgress && console.log("Starting benchmark...");
 
     let lastLog = start;
     const simulateCameraDetections = async () => {
