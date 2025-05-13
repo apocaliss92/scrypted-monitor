@@ -1,20 +1,21 @@
-import sdk, { Notifier, Reboot, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting } from "@scrypted/sdk";
+import sdk, { HttpRequest, HttpRequestHandler, HttpResponse, Notifier, Reboot, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting } from "@scrypted/sdk";
 import { StorageSettings } from "@scrypted/sdk/storage-settings";
+import moment from "moment";
 import cron, { ScheduledTask } from 'node-cron';
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
-import { getAllPlugins, getPluginStats, getTaskChecksum, getTaskKeys, pluginHasUpdate, restartScrypted, restartPlugin, runValidate, Task, TaskType, updatePlugin, getStorageInfo } from "./utils";
-import moment from "moment";
 import DiagnosticsPlugin from '../../scrypted/plugins/diagnostics/src/main';
-import { scrypted } from '../package.json'
+import { scrypted } from '../package.json';
+import { executeWorkerDetections, getAllPlugins, getClusterWorkers, getPluginStats, getTaskChecksum, getTaskKeys, getWebHookUrls, getWebooks, pluginHasUpdate, restartPlugin, restartScrypted, runValidate, Task, TaskType, updatePlugin } from "./utils";
 
 const divider = '-------------';
 
-export default class RemoteBackup extends BasePlugin {
+export default class RemoteBackup extends BasePlugin implements HttpRequestHandler {
     private cronTasks: ScheduledTask[] = [];
     private currentChecksum: string;
     private diagnosticsPlugin: any;
     private tasksCheckListener: NodeJS.Timeout;
-    storageSettings = new StorageSettings(this, {
+    private lastWorkerHealthcheck: Record<string, number> = {};
+    storageSettings = new StorageSettings<string>(this, {
         ...getBaseSettings({
             onPluginSwitch: (_, enabled) => this.startStop(enabled),
             hideMqtt: true,
@@ -60,6 +61,15 @@ export default class RemoteBackup extends BasePlugin {
                     await this.executeTask(this.getTask(taskManualExecution));
                 }
             }
+        },
+        healthcheckEndpoints: {
+            title: 'Healthcheck endpoints',
+            group: 'Webhooks',
+            type: 'string',
+            multiple: true,
+            defaultValue: [],
+            hide: true,
+            readonly: true,
         }
     });
 
@@ -74,11 +84,90 @@ export default class RemoteBackup extends BasePlugin {
         this.start(true).then().catch(console.log);
     }
 
+    async onRequest(request: HttpRequest, response: HttpResponse): Promise<void> {
+        const logger = this.getLogger();
+        const url = new URL(`http://localhost${request.url}`);
+
+        const [_, __, ___, ____, _____, webhook, ...rest] = url.pathname.split('/');
+        const [workerNameRaw] = rest
+        let workerName = decodeURIComponent(workerNameRaw);
+        logger.log(`Webhook request: ${JSON.stringify({
+            url: request.url,
+            body: request.body,
+            webhook,
+            workerNameRaw,
+            workerName,
+        })}`);
+
+        try {
+            const { healthcheck } = await getWebooks();
+            if (webhook === healthcheck) {
+                const lastRun = this.lastWorkerHealthcheck[workerName];
+
+                const now = Date.now();
+                const msFromLastRun = now - lastRun;
+                if (!lastRun || (msFromLastRun) > 1000 * 30) {
+                    const detectionsToRun = 5;
+                    const detectionResult = await executeWorkerDetections({ workerName, detectionsToRun });
+                    this.lastWorkerHealthcheck[workerName] = now;
+
+                    if (detectionResult) {
+                        if (detectionResult.completedDetectionsForRun === detectionsToRun) {
+                            response.send('Ok', {
+                                code: 200,
+                            });
+                        } else {
+                            response.send('NotOk', {
+                                code: 400,
+                            });
+                        }
+                        return;
+                    } else {
+                        response.send(`Worker ${workerName} not found`, {
+                            code: 404,
+                        });
+                        return;
+                    }
+                } else {
+                    response.send(`Need to wait at least 30 seconds between healthchecks, ${30 - (msFromLastRun / 1000)} seconds remaining`, {
+                        code: 500,
+                    });
+                    return;
+                }
+            } else {
+                response.send(`Webohok ${webhook} not found`, {
+                    code: 404,
+                });
+                return;
+            }
+        } catch (e) {
+            logger.log('error in onRequest', e);
+
+            response.send(`Error in healthcheck, ${e.message}`, {
+                code: 500,
+            });
+            return;
+        }
+    }
 
     async start(shouldLog: boolean) {
+        const logger = this.getLogger();
         if (shouldLog) {
-            const logger = this.getLogger();
             logger.log('Plugin enabled, starting');
+        }
+
+        if (sdk.clusterManager?.getClusterMode?.()) {
+            const workers = await getClusterWorkers();
+            const webhooks: string[] = [];
+
+            for (const worker of workers) {
+                const { healthcheckUrl } = await getWebHookUrls({ workerName: worker.name, console: logger });
+                webhooks.push(healthcheckUrl);
+            }
+            logger.log(webhooks);
+
+            this.storageSettings.settings.healthcheckEndpoints.hide = false;
+            this.storageSettings.values.healthcheckEndpoints = webhooks;
         }
 
         this.tasksCheckListener = setInterval(async () => {

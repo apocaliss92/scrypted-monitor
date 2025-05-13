@@ -1,4 +1,4 @@
-import sdk, { MediaObject, ObjectDetection, ScryptedInterface, ScryptedNativeId, Settings, Image, ClusterForkInterface } from "@scrypted/sdk";
+import sdk, { MediaObject, ObjectDetection, ScryptedInterface, ScryptedNativeId, Settings, Image, ClusterForkInterface, } from "@scrypted/sdk";
 import { throttle } from "lodash";
 import semver from 'semver';
 
@@ -185,6 +185,7 @@ export interface ClusterWorker {
     name: string;
     id: string;
     labels: string[];
+    mode: 'server' | 'client';
     forks: ClusterFork[];
 }
 
@@ -201,11 +202,31 @@ export const getAllPlugins = () => {
     return pluginNames;
 }
 
-export const getPluginStats = async (maxStats = 5) => {
+export const getRpcData = async () => {
+    const pluginNames = getAllPlugins();
+    const rpcObjects: { name: string, count: number }[] = [];
+    const pendingResults: { name: string, count: number }[] = [];
+    const connections: { name: string, count: number }[] = [];
+
     const plugins = await sdk.systemManager.getComponent(
         "plugins"
     );
-    const pluginNames = getAllPlugins();
+
+    for (const pluginName of pluginNames) {
+        const pluginStats: PluginInfo = await plugins.getPluginInfo(pluginName);
+        rpcObjects.push({ name: pluginName, count: pluginStats.rpcObjects });
+        connections.push({ name: pluginName, count: pluginStats.clientsCount });
+        pendingResults.push({ name: pluginName, count: pluginStats.pendingResults });
+    }
+
+    return {
+        rpcObjects,
+        connections,
+        pendingResults,
+    };
+}
+
+export const getPluginStats = async (maxStats = 5) => {
     const stats: PluginStats = {
         currentObjectDetections: [],
         currentMotionDetections: [],
@@ -221,9 +242,9 @@ export const getPluginStats = async (maxStats = 5) => {
         recordingCameras: '-'
     }
 
-    const videoAnalytisPlugin = sdk.systemManager.getDeviceByName('Video Analysis Plugin') as unknown as Settings;
-    if (videoAnalytisPlugin) {
-        const settings = await videoAnalytisPlugin.getSettings();
+    const videoAnalysisPlugin = sdk.systemManager.getDeviceByName('Video Analysis Plugin') as unknown as Settings;
+    if (videoAnalysisPlugin) {
+        const settings = await videoAnalysisPlugin.getSettings();
         const activeObjectDetections = settings.find(item => item.key === 'activeObjectDetections');
         stats.currentObjectDetections = (activeObjectDetections.value ?? []) as string[]
         const activeMotionDetections = settings.find(item => item.key === 'activeMotionDetections');
@@ -236,17 +257,11 @@ export const getPluginStats = async (maxStats = 5) => {
         const activeStreams = settings.find(item => item.key === 'active');
         stats.currentActiveStreams = (activeStreams.value ?? []) as number;
     }
+    const { connections, pendingResults, rpcObjects } = await getRpcData();
 
-    for (const pluginName of pluginNames) {
-        const pluginStats: PluginInfo = await plugins.getPluginInfo(pluginName);
-        stats.rpcObjects.push({ name: pluginName, count: pluginStats.rpcObjects });
-        stats.connections.push({ name: pluginName, count: pluginStats.clientsCount });
-        stats.pendingResults.push({ name: pluginName, count: pluginStats.pendingResults });
-    }
-
-    stats.rpcObjects = stats.rpcObjects.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, maxStats);
-    stats.connections = stats.connections.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, maxStats);
-    stats.pendingResults = stats.pendingResults.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, maxStats);
+    stats.rpcObjects = rpcObjects.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, maxStats);
+    stats.connections = connections.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, maxStats);
+    stats.pendingResults = pendingResults.filter(p => !!p.count).sort((a, b) => b.count - a.count).slice(0, maxStats);
 
     const clusterFork = await sdk.systemManager.getComponent('cluster-fork');
     if (clusterFork) {
@@ -470,19 +485,86 @@ interface Benchmark {
     detectorsStats: DetectorStats[]
 }
 
+export const availableObjectDetectors = [
+    '@scrypted/openvino',
+    '@scrypted/coreml',
+    '@scrypted/onnx',
+    '@scrypted/tensorflow-lite',
+    '@scrypted/rknn',
+];
+
+const runDetector = async (props: {
+    d: ObjectDetection,
+    image: Image & MediaObject,
+    simulatedCameras: number,
+    batchesPerCamera: number,
+    batch: number,
+    logProgress?: any
+}) => {
+    let completedDetections = 0;
+    const { d, image, batch, batchesPerCamera, simulatedCameras, logProgress } = props;
+    const model = await d.getDetectionModel();
+    console.log('Model', model);
+    const bytes = Buffer.alloc(model.inputSize[0] * model.inputSize[1] * 3);
+    const media = await sdk.mediaManager.createMediaObject(bytes, 'x-scrypted/x-scrypted-image', {
+        sourceId: image.sourceId,
+        width: model.inputSize[0],
+        height: model.inputSize[1],
+        ffmpegFormats: true,
+        format: null,
+        toBuffer: async (options) => bytes,
+        toImage: undefined,
+        close: () => image.close(),
+    })
+    const start = Date.now();
+    let detections = 0;
+    const totalDetections = simulatedCameras * batchesPerCamera * batch;
+
+    console.log("Starting benchmark...");
+
+    let lastLog = start;
+    const simulateCameraDetections = async () => {
+        for (let i = 0; i < batchesPerCamera; i++) {
+            await Promise.all([
+                d.detectObjects(media, { batch }),
+                d.detectObjects(media),
+                d.detectObjects(media),
+                d.detectObjects(media),
+            ]);
+            detections += batch;
+            completedDetections += batch;
+            if (logProgress) {
+                const now = Date.now();
+                if (now - lastLog > 3000) {
+                    lastLog = now;
+                    logProgress(detections, totalDetections, start);
+                }
+            }
+        }
+    };
+
+    const simulated = [];
+    for (let i = 0; i < simulatedCameras; i++) {
+        simulated.push(simulateCameraDetections());
+    }
+
+    await Promise.all(simulated);
+
+    return completedDetections;
+}
+
+const getTestImage = async () => {
+    const mo = await sdk.mediaManager.createMediaObjectFromUrl('https://user-images.githubusercontent.com/73924/230690188-7a25983a-0630-44e9-9e2d-b4ac150f1524.jpg');
+    const image = await sdk.mediaManager.convertMediaObject<Image & MediaObject>(mo, 'x-scrypted/x-scrypted-image');
+
+    return image;
+}
+
 export const runBenchmark = async (): Promise<Benchmark> => {
     const os = require('os');
     const detectorsStats: DetectorStats[] = [];
 
-    const mo = await sdk.mediaManager.createMediaObjectFromUrl('https://user-images.githubusercontent.com/73924/230690188-7a25983a-0630-44e9-9e2d-b4ac150f1524.jpg');
-    const image = await sdk.mediaManager.convertMediaObject<Image & MediaObject>(mo, 'x-scrypted/x-scrypted-image');
-    const detectors = [
-        '@scrypted/openvino',
-        '@scrypted/coreml',
-        '@scrypted/onnx',
-        '@scrypted/tensorflow-lite',
-        '@scrypted/rknn',
-    ];
+    const image = await getTestImage();
     const simulatedCameras = 4;
     const batch = 4;
     const batchesPerCamera = 125;
@@ -522,57 +604,12 @@ export const runBenchmark = async (): Promise<Benchmark> => {
     console.log('OS Release:', os.release() || 'Not found');
 
     let completedDetections = 0;
-    const runDetector = async (d: ObjectDetection) => {
-        const model = await d.getDetectionModel();
-        console.log('Model', model);
-        const bytes = Buffer.alloc(model.inputSize[0] * model.inputSize[1] * 3);
-        const media = await sdk.mediaManager.createMediaObject(bytes, 'x-scrypted/x-scrypted-image', {
-            sourceId: image.sourceId,
-            width: model.inputSize[0],
-            height: model.inputSize[1],
-            ffmpegFormats: true,
-            format: null,
-            toBuffer: async (options) => bytes,
-            toImage: undefined,
-            close: () => image.close(),
-        })
-        const start = Date.now();
-        let detections = 0;
-        const totalDetections = simulatedCameras * batchesPerCamera * batch;
 
-        console.log("Starting benchmark...");
-
-        let lastLog = start;
-        const simulateCameraDetections = async () => {
-            for (let i = 0; i < batchesPerCamera; i++) {
-                await Promise.all([
-                    d.detectObjects(media, { batch }),
-                    d.detectObjects(media),
-                    d.detectObjects(media),
-                    d.detectObjects(media),
-                ]);
-                detections += batch;
-                completedDetections += batch;
-                const now = Date.now();
-                if (now - lastLog > 3000) {
-                    lastLog = now;
-                    logProgress(detections, totalDetections, start);
-                }
-            }
-        };
-
-        const simulated = [];
-        for (let i = 0; i < simulatedCameras; i++) {
-            simulated.push(simulateCameraDetections());
-        }
-
-        await Promise.all(simulated);
-    }
 
     const start = Date.now();
     let totalDetectors = 0;
     let clusterDps: number;
-    await Promise.allSettled(detectors.map(async id => {
+    await Promise.allSettled(availableObjectDetectors.map(async id => {
         const d = sdk.systemManager.getDeviceById<Settings & ObjectDetection & ClusterForkInterface>(id);
         if (!d) {
             console.log(`${id} not found, skipping.`);
@@ -594,7 +631,15 @@ export const runBenchmark = async (): Promise<Benchmark> => {
                 console.log('  Unable to retrieve settings');
             }
             try {
-                await runDetector(d);
+                const completedDetectionsForRun = await runDetector({
+                    batch,
+                    batchesPerCamera,
+                    d,
+                    image,
+                    simulatedCameras,
+                    logProgress
+                });
+                completedDetections += completedDetectionsForRun;
 
                 const end = Date.now();
                 if (!clusterDps)
@@ -651,3 +696,84 @@ export const runBenchmark = async (): Promise<Benchmark> => {
         detectorsStats
     }
 };
+
+export const executeWorkerDetections = async (props: {
+    workerName: string,
+    detectionsToRun: number
+}) => {
+    const { detectionsToRun, workerName } = props;
+    const workers = await getClusterWorkers();
+    const worker = workers.find(item => item.name === workerName);
+
+    if (!worker) {
+        return null;
+    } else {
+        const detectorId = availableObjectDetectors.find(detector => worker.labels.includes(detector));
+
+        const d = sdk.systemManager.getDeviceById<Settings & ObjectDetection & ClusterForkInterface>(detectorId);
+        const forked = await d.forkInterface<ObjectDetection & Settings>(ScryptedInterface.ObjectDetection, {
+            clusterWorkerId: worker.id,
+        });
+        const image = await getTestImage();
+
+        const completedDetectionsForRun = await runDetector({
+            batch: 1,
+            batchesPerCamera: detectionsToRun,
+            d: forked,
+            image,
+            simulatedCameras: 1,
+        });
+
+        return { detectorId, completedDetectionsForRun };
+    }
+}
+
+export const getClusterWorkers = async () => {
+    const clusterFork = await sdk.systemManager.getComponent('cluster-fork');
+    if (clusterFork) {
+        const clusterWorkers = await clusterFork.getClusterWorkers() as Record<string, ClusterWorker>;
+
+        return Object.values(clusterWorkers);
+    }
+}
+
+export const getWebooks = async () => {
+    const healthcheck = 'healthcheck';
+
+    return {
+        healthcheck
+    };
+}
+
+export const getWebHookUrls = async (props: {
+    workerName?: string,
+    console: Console,
+}) => {
+    const {
+        console,
+        workerName,
+    } = props;
+
+    let healthcheckUrl: string;
+
+    const {
+        healthcheck
+    } = await getWebooks();
+
+    try {
+        const cloudEndpointRaw = await sdk.endpointManager.getCloudEndpoint(undefined, { public: true });
+
+        const [cloudEndpoint, parameters] = cloudEndpointRaw.split('?') ?? '';
+        const paramString = parameters ? `?${parameters}` : '';
+
+        const encodedWorkerName = encodeURIComponent(workerName);
+
+        healthcheckUrl = `${cloudEndpoint}${healthcheck}/${encodedWorkerName}${paramString}`;
+    } catch (e) {
+        console.log('Error fetching webhookUrls. Probably Cloud plugin is not setup correctly', e.message);
+    }
+
+    return {
+        healthcheckUrl
+    };
+}

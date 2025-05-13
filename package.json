@@ -5,7 +5,7 @@
       "type": "git",
       "url": "https://github.com/apocaliss92/scrypted-monitor"
    },
-   "version": "0.0.30",
+   "version": "0.0.31",
    "scripts": {
       "scrypted-setup-project": "scrypted-setup-project",
       "prescrypted-setup-project": "scrypted-package-json",
@@ -27,13 +27,15 @@
       "update",
       "diagnostics",
       "benchmark",
+      "healthcheck",
       "schedule"
    ],
    "scrypted": {
       "name": "Scrypted plugins monitor",
       "type": "API",
       "interfaces": [
-         "Settings"
+         "Settings",
+         "HttpRequestHandler"
       ],
       "pluginDependencies": []
    },
