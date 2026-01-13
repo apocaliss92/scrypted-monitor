@@ -5,6 +5,7 @@ import semver from 'semver';
 export enum TaskType {
     UpdatePlugins = 'UpdatePlugins',
     RestartPlugins = 'RestartPlugins',
+    PluginEventsMonitoring = 'PluginEventsMonitoring',
     Diagnostics = 'Diagnostics',
     RestartCameras = 'RestartCameras',
     ReportPluginsStatus = 'ReportPluginsStatus',
@@ -53,10 +54,12 @@ export interface Task {
     enabled: boolean;
     beta: boolean;
     skipNotify: boolean;
+    pluginEventsLevel?: 'info' | 'warning' | 'error';
     checkAllPlugins?: boolean;
     maxStats?: number;
     runSystemDiagnostic?: boolean;
     plugins?: string[];
+    rpcThreshold?: number;
     devices?: string[];
     additionalNotifiers?: string[];
     batteryThreshold?: number;
@@ -114,6 +117,30 @@ export const restartPlugin = async (pluginName: string) => {
     await plugins.reload(pluginName);
 }
 
+export interface ScryptedLogEntry {
+    _id: string;
+    timestamp: number;
+    message: string;
+    level: string;
+}
+
+export const fetchPluginEvents = async (pluginName: string) => {
+    const pluginDevice = sdk.systemManager.getDeviceByName(pluginName);
+    const pluginDeviceId = pluginDevice.id;
+    const loggerComponent = await sdk.systemManager.getComponent('logger');
+    
+    if (!loggerComponent?.getLogger) {
+        throw new Error('Logger component not available');
+    }
+
+    const deviceLogger = await loggerComponent.getLogger('device');
+    const idLogger = await deviceLogger.getLogger(pluginDeviceId);
+    const logs = (await idLogger.getLogs()) as ScryptedLogEntry[];
+
+    logs.reverse();
+    return logs;
+}
+
 export const getStorageInfo = async () => {
     const scryptedNvrSettingsId = Object.keys(sdk.systemManager.getSystemState())
         .find(id => {
@@ -142,6 +169,7 @@ interface PluginInfo {
     pid: number;
     rpcObjects: number;
     pendingResults: number;
+    pendingResultCounts: Record<string, number>;
 }
 
 interface PluginStats {
@@ -206,7 +234,9 @@ export const getRpcData = async () => {
     const pluginNames = getAllPlugins();
     const rpcObjects: { name: string, count: number }[] = [];
     const pendingResults: { name: string, count: number }[] = [];
+    const pendingResultCounts: { name: string, count: PluginInfo['pendingResultCounts'] }[] = [];
     const connections: { name: string, count: number }[] = [];
+    const stats: Record<string, PluginInfo> = {};
 
     const plugins = await sdk.systemManager.getComponent(
         "plugins"
@@ -217,12 +247,16 @@ export const getRpcData = async () => {
         rpcObjects.push({ name: pluginName, count: pluginStats.rpcObjects });
         connections.push({ name: pluginName, count: pluginStats.clientsCount });
         pendingResults.push({ name: pluginName, count: pluginStats.pendingResults });
+        pendingResultCounts.push({ name: pluginName, count: pluginStats.pendingResultCounts });
+        stats[pluginName] = pluginStats;
     }
 
     return {
         rpcObjects,
         connections,
         pendingResults,
+        stats,
+        pendingResultCounts,
     };
 }
 
@@ -379,6 +413,8 @@ export const getTaskKeys = (taskName: string) => {
     const taskAdditionalNotifiers = `task:${taskName}:additionalNotifiers`;
     const taskCalendarEntity = `task:${taskName}:calendarEntity`;
     const tasksUnavailableTime = `task:${taskName}:tasksUnavailableTime`;
+    const taskRpcObjects = `task:${taskName}:taskRpcObjects`;
+    const taskPluginEventsLevelKey = `task:${taskName}:pluginEventsLevel`;
 
     return {
         taskTypeKey,
@@ -399,6 +435,8 @@ export const getTaskKeys = (taskName: string) => {
         taskCalendarEntity,
         tasksUnavailableTime,
         taskCalendarDaysInFuture,
+        taskRpcObjects,
+        taskPluginEventsLevelKey,
     }
 }
 
