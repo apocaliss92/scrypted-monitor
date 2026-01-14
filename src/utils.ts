@@ -1,6 +1,8 @@
 import sdk, { MediaObject, ObjectDetection, ScryptedInterface, ScryptedNativeId, Settings, Image, ClusterForkInterface, } from "@scrypted/sdk";
 import { throttle } from "lodash";
 import semver from 'semver';
+import fs from 'fs';
+import path from 'path';
 
 export enum TaskType {
     UpdatePlugins = 'UpdatePlugins',
@@ -115,6 +117,12 @@ const checkNpmUpdate = async (npmPackage: string, npmPackageVersion: string, log
 export const restartPlugin = async (pluginName: string) => {
     const plugins = await sdk.systemManager.getComponent('plugins');
     await plugins.reload(pluginName);
+}
+
+export enum MigrationKeys {
+    NVRRecordings = 'NVRRecordings',
+    PluginSettings = 'PluginSettings',
+    Extensions = 'Extensions',
 }
 
 export interface ScryptedLogEntry {
@@ -815,3 +823,126 @@ export const getWebHookUrls = async (props: {
         healthcheckUrl
     };
 }
+
+export const migrateNvrRecordingsFolders = async (props: {
+    console: { log: (...args: any[]) => void };
+    recordingsPath: string;
+    sourceDeviceId: string;
+    targetDeviceId: string;
+}) => {
+    const { console, recordingsPath, sourceDeviceId, targetDeviceId } = props;
+
+    if (!recordingsPath || typeof recordingsPath !== 'string') {
+        console.log('Camera migration: recordingsPath is not configured, cannot read NVR folders');
+        return;
+    }
+
+    const pathExists = async (p: string) => {
+        try {
+            await fs.promises.access(p);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
+    const safeUnlink = async (p: string) => {
+        try {
+            await fs.promises.rm(p, { force: true, recursive: false });
+        } catch {
+            // ignore
+        }
+    };
+
+    const mergeMoveDir = async (srcDir: string, dstDir: string) => {
+        if (!(await pathExists(srcDir))) {
+            return;
+        }
+
+        if (!(await pathExists(dstDir))) {
+            try {
+                await fs.promises.rename(srcDir, dstDir);
+                console.log(`Camera migration: moved folder ${path.basename(srcDir)} -> ${path.basename(dstDir)}`);
+                return;
+            } catch (e) {
+                // fall through to copy+merge
+                console.log('Camera migration: rename failed, falling back to merge', {
+                    srcDir,
+                    dstDir,
+                    error: (e as any)?.message || e,
+                });
+            }
+        }
+
+        await fs.promises.mkdir(dstDir, { recursive: true });
+        const srcEntries = await fs.promises.readdir(srcDir, { withFileTypes: true });
+
+        for (const entry of srcEntries) {
+            const srcPath = path.join(srcDir, entry.name);
+            const dstPath = path.join(dstDir, entry.name);
+
+            if (entry.isDirectory()) {
+                await mergeMoveDir(srcPath, dstPath);
+                continue;
+            }
+
+            if (await pathExists(dstPath)) {
+                // Merge policy: keep target, discard source.
+                await safeUnlink(srcPath);
+                continue;
+            }
+
+            try {
+                await fs.promises.rename(srcPath, dstPath);
+            } catch {
+                await fs.promises.copyFile(srcPath, dstPath);
+                await safeUnlink(srcPath);
+            }
+        }
+
+        // Remove the (now empty) source directory.
+        await fs.promises.rm(srcDir, { recursive: true, force: true });
+    };
+
+    const entries = await fs.promises.readdir(recordingsPath, { withFileTypes: true });
+    const folderNames = new Set(
+        entries
+            .filter(e => e.isDirectory())
+            .map(e => e.name)
+    );
+
+    const expectedFoldersForDevice = (deviceId: string) => {
+        const base = `scrypted-${deviceId}`;
+        return [
+            base,
+            `${base}.events`,
+            `${base}.low-resolution`,
+            `${base}.remote`,
+        ];
+    };
+
+    const sourceExpected = expectedFoldersForDevice(sourceDeviceId);
+    const targetExpected = expectedFoldersForDevice(targetDeviceId);
+
+    const sourceFound = sourceExpected.filter(name => folderNames.has(name));
+    const targetFound = targetExpected.filter(name => folderNames.has(name));
+
+    console.log(`Camera migration: NVR folder scan under recordingsPath: ${recordingsPath}`);
+    console.log(`Camera migration: sourceId=${sourceDeviceId} folders found: ${sourceFound.length}/4 (${sourceFound.join(', ') || 'none'})`);
+    console.log(`Camera migration: targetId=${targetDeviceId} folders found: ${targetFound.length}/4 (${targetFound.join(', ') || 'none'})`);
+
+    const suffixes = ['', '.events', '.low-resolution', '.remote'] as const;
+    for (const suffix of suffixes) {
+        const srcName = `scrypted-${sourceDeviceId}${suffix}`;
+        const dstName = `scrypted-${targetDeviceId}${suffix}`;
+        const srcDir = path.join(recordingsPath, srcName);
+        const dstDir = path.join(recordingsPath, dstName);
+
+        if (!(await pathExists(srcDir))) {
+            continue;
+        }
+
+        console.log(`Camera migration: migrating NVR folder ${srcName} -> ${dstName}`);
+        await mergeMoveDir(srcDir, dstDir);
+    }
+};

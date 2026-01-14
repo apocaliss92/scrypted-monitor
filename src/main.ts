@@ -5,8 +5,8 @@ import cron, { ScheduledTask } from 'node-cron';
 import { BasePlugin, getBaseSettings } from '../../scrypted-apocaliss-base/src/basePlugin';
 import DiagnosticsPlugin from '../../scrypted/plugins/diagnostics/src/main';
 import { scrypted } from '../package.json';
-import { executeWorkerDetections, fetchPluginEvents, getAllPlugins, getClusterWorkers, getPluginStats, getRpcData, getTaskChecksum, getTaskKeys, getWebHookUrls, getWebooks, pluginHasUpdate, restartPlugin, restartScrypted, runValidate, ScryptedLogEntry, Task, TaskType, updatePlugin } from "./utils";
-import { keyBy } from "lodash";
+import { executeWorkerDetections, fetchPluginEvents, getAllPlugins, getClusterWorkers, getPluginStats, getRpcData, getTaskChecksum, getTaskKeys, getWebHookUrls, getWebooks, migrateNvrRecordingsFolders, MigrationKeys, pluginHasUpdate, restartPlugin, restartScrypted, runValidate, ScryptedLogEntry, Task, TaskType, updatePlugin } from "./utils";
+import { keyBy, uniq } from "lodash";
 
 const divider = '-------------';
 
@@ -19,7 +19,7 @@ export default class RemoteBackup extends BasePlugin implements HttpRequestHandl
     private pluginEventsMonitorInterval: NodeJS.Timeout;
     private pluginEventsMonitorRunning = false;
     private pluginEventsLastSeenByTaskPlugin = new Map<string, string>();
-    storageSettings = new StorageSettings<string>(this, {
+    storageSettings = new StorageSettings(this, {
         ...getBaseSettings({
             onPluginSwitch: (_, enabled) => this.startStop(enabled),
             hideMqtt: true,
@@ -69,14 +69,25 @@ export default class RemoteBackup extends BasePlugin implements HttpRequestHandl
         cameraMigrationSource: {
             title: 'Source camera',
             group: 'Camera migration',
+            immediate: true,
             type: 'device',
             deviceFilter: `(type === '${ScryptedDeviceType.Camera}')`,
         },
         cameraMigrationTarget: {
             title: 'Target camera',
             group: 'Camera migration',
+            immediate: true,
             type: 'device',
             deviceFilter: `(type === '${ScryptedDeviceType.Camera}')`,
+        },
+        cameraMigrationKeys: {
+            title: 'What to migrate',
+            group: 'Camera migration',
+            type: 'string',
+            multiple: true,
+            immediate: true,
+            choices: Object.values(MigrationKeys),
+            defaultValue: Object.values(MigrationKeys),
         },
         cameraMigrationExecute: {
             title: 'Migrate',
@@ -84,20 +95,7 @@ export default class RemoteBackup extends BasePlugin implements HttpRequestHandl
             type: 'button',
             immediate: true,
             onPut: async () => {
-                const logger = this.getLogger();
-                const { cameraMigrationSource, cameraMigrationTarget } = this.storageSettings.values;
-
-                if (!cameraMigrationSource || !cameraMigrationTarget) {
-                    logger.log('Camera migration: source e target sono obbligatori');
-                    return;
-                }
-
-                if (cameraMigrationSource === cameraMigrationTarget) {
-                    logger.log('Camera migration: source e target devono essere diversi');
-                    return;
-                }
-
-                await this.migrateCamera(cameraMigrationSource, cameraMigrationTarget);
+                await this.migrateCamera();
             }
         },
         healthcheckEndpoints: {
@@ -777,41 +775,92 @@ export default class RemoteBackup extends BasePlugin implements HttpRequestHandl
         return super.getLoggerInternal({});
     }
 
-    private async migrateCamera(sourceDeviceId: string, targetDeviceId: string) {
+    private async migrateCamera() {
         const logger = this.getLogger();
-        const source = sdk.systemManager.getDeviceById<Settings>(sourceDeviceId);
-        const target = sdk.systemManager.getDeviceById<Settings>(targetDeviceId);
+        const { cameraMigrationSource, cameraMigrationTarget, cameraMigrationKeys } = this.storageSettings.values;
+
+        if (!cameraMigrationSource || !cameraMigrationTarget) {
+            logger.log('Camera migration: source and target are required');
+            return;
+        }
+
+        if (cameraMigrationSource === cameraMigrationTarget) {
+            logger.log('Camera migration: source and target must differ');
+            return;
+        }
+
+        const source = sdk.systemManager.getDeviceById<Settings>(cameraMigrationSource.id);
+        const target = sdk.systemManager.getDeviceById<Settings>(cameraMigrationTarget.id);
 
         if (!source || !target) {
-            throw new Error('Camera migration: source o target non trovato');
+            throw new Error('Camera migration: source or target not found');
         }
 
-        logger.log(`Camera migration: ${source.name} (${sourceDeviceId}) -> ${target.name} (${targetDeviceId})`);
+        logger.log(`Camera migration: ${source.name} (${cameraMigrationSource}) -> ${target.name} (${cameraMigrationTarget}): keys: ${cameraMigrationKeys.join(', ')}`);
 
-        const [sourceSettings, targetSettings] = await Promise.all([
-            source.getSettings(),
-            target.getSettings(),
-        ]);
-
-        const targetSettingsByKey = keyBy(targetSettings, 'key');
         let migratedCount = 0;
+        if (cameraMigrationKeys.includes(MigrationKeys.PluginSettings)) {
+            const [sourceSettings, targetSettings] = await Promise.all([
+                source.getSettings(),
+                target.getSettings(),
+            ]);
 
-        for (const setting of sourceSettings) {
-            const { key } = setting;
+            // const targetSettingsByKey = keyBy(targetSettings, 'key');
 
-            if (!targetSettingsByKey[key]) {
-                continue;
+            // logger.log(JSON.stringify({ sourceSettings }))
+            for (const setting of sourceSettings) {
+                const { key } = setting;
+
+                // if (!targetSettingsByKey[key]) {
+                //     continue;
+                // }
+
+                const group = key.split(':')[0];
+
+                // homeassistantMetadata = advanced notifier
+                if (['objectdetectionplugin', 'recording', 'homeassistantMetadata'].includes(group)) {
+                    await target.putSetting(key, setting.value);
+                    migratedCount++;
+                }
             }
-
-            const group = key.split(':')[0];
-
-            if (['objectdetectionplugin'].includes(group)) {
-                await target.putSetting(key, setting.value);
-            }
-
         }
 
-        logger.log(`Camera migration: completata (settings copiati: ${migratedCount})`);
+        if (cameraMigrationKeys.includes(MigrationKeys.NVRRecordings)) {
+            const nvrDevice = sdk.systemManager.getDeviceByName<Settings>('Scrypted NVR');
+            if (!nvrDevice) {
+                logger.log('Camera migration: Scrypted NVR device not found, skipping NVR recordings migration');
+            } else {
+                const nvrSettings = await nvrDevice.getSettings();
+                const recordingSettingsKey = nvrSettings.find(s => s.key === 'recordingsPath')?.value;
+
+                if (!recordingSettingsKey || typeof recordingSettingsKey !== 'string') {
+                    logger.log('Camera migration: recordingsPath is not configured, cannot read NVR folders');
+                } else {
+                    try {
+                        await migrateNvrRecordingsFolders({
+                            console: logger,
+                            recordingsPath: recordingSettingsKey,
+                            sourceDeviceId: source.id,
+                            targetDeviceId: target.id,
+                        });
+                    } catch (e) {
+                        logger.log('Camera migration: error reading recordingsPath', recordingSettingsKey, e);
+                    }
+                }
+            }
+        }
+
+        if (cameraMigrationKeys.includes(MigrationKeys.Extensions)) {
+            const srcMixins = source.mixins;
+            target.setMixins(uniq([
+                ...target.mixins,
+                ...srcMixins
+            ]));
+
+            source.setMixins([]);
+        }
+
+        logger.log(`Camera migration: completed (settings copied: ${migratedCount})`);
     }
 
     async startTaskCron(task: Task) {
