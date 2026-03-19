@@ -110,14 +110,14 @@ export default class RemoteBackup
       group: "Camera migration",
       immediate: true,
       type: "device",
-      deviceFilter: `(type === '${ScryptedDeviceType.Camera}')`,
+      deviceFilter,
     },
     cameraMigrationTarget: {
       title: "Target camera",
       group: "Camera migration",
       immediate: true,
       type: "device",
-      deviceFilter: `(type === '${ScryptedDeviceType.Camera}')`,
+      deviceFilter,
     },
     cameraMigrationKeys: {
       title: "What to migrate",
