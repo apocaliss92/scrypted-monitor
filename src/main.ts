@@ -45,6 +45,7 @@ import { keyBy, uniq } from "lodash";
 
 const divider = "-------------";
 const deviceFilter = `type === '${ScryptedDeviceType.Camera}' || type === '${ScryptedDeviceType.Doorbell}'`;
+const notifierFilter = `type === '${ScryptedDeviceType.Notifier}'`;
 
 export default class RemoteBackup
   extends BasePlugin
@@ -75,7 +76,7 @@ export default class RemoteBackup
     notifier: {
       title: "Notifier",
       type: "device",
-      deviceFilter,
+      deviceFilter: notifierFilter,
     },
     datesLocale: {
       title: "Dates locale",
@@ -1531,7 +1532,7 @@ export default class RemoteBackup
           key: taskAdditionalNotifiers,
           title: "Override notifiers",
           type: "device",
-          deviceFilter,
+          deviceFilter: notifierFilter,
           multiple: true,
           combobox: true,
           value: additionalNotifiers,
